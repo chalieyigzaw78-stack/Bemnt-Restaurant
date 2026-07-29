@@ -32,5 +32,12 @@ export async function initDb() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS menu_availability (
+      item_id TEXT PRIMARY KEY,
+      available BOOLEAN NOT NULL DEFAULT true
+    );
+  `);
+
   console.log("Database initialized.");
 }
