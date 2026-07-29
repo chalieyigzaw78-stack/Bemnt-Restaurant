@@ -1,4 +1,5 @@
 import { Telegraf, Markup } from "telegraf";
+import http from "http";
 import dotenv from "dotenv";
 import { pool, initDb } from "./db";
 import { RESTAURANT, ADMIN_IDS, MENU } from "./config";
@@ -14,6 +15,9 @@ import {
 } from "./cart";
 
 dotenv.config();
+
+// Keep Render happy by opening a port
+http.createServer((_, res) => res.end("OK")).listen(process.env.PORT || 3000);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) {
