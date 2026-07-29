@@ -22,6 +22,11 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
+// Prevent one bad/expired update from crashing the whole bot
+bot.catch((err, ctx) => {
+  console.error(`Bot error for update type ${ctx.updateType}:`, err);
+});
+
 function menuKeyboard() {
   const buttons = MENU.map((item) =>
     Markup.button.callback(`${item.name} — ${item.price} birr`, `add_${item.id}`)
@@ -49,6 +54,7 @@ function cartKeyboard(userId: number) {
 // --- Commands ---
 
 bot.start((ctx) => {
+  console.log("Telegram user ID:", ctx.from.id); // debug — check Render logs
   clearCart(ctx.from.id);
   clearDraft(ctx.from.id);
   ctx.reply(
@@ -140,11 +146,11 @@ bot.action(/^order_type_(delivery|pickup)$/, async (ctx) => {
   }
 });
 
-// Handle free-text replies depending on what step the user is on
+// Handle free-text replies depending on checkout step
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
-  if (!draft.orderType) return; // not in checkout flow, ignore
+  if (!draft.orderType) return;
 
   if (draft.orderType === "delivery" && !draft.deliveryAddress) {
     setDraft(userId, { ...draft, deliveryAddress: ctx.message.text });
@@ -185,7 +191,9 @@ async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
 
   setDraft(userId, { ...draft, awaitingScreenshotFor: orderId });
 
-  const summary = cart.map((i) => `${i.name} x${i.quantity} — ${i.price * i.quantity} birr`).join("\n");
+  const summary = cart
+    .map((i) => `${i.name} x${i.quantity} — ${i.price * i.quantity} birr`)
+    .join("\n");
 
   await ctx.reply(
     `Order #${orderId} received! ✅\n\n${summary}\n\nTotal: ${total} birr\n\n` +
@@ -253,7 +261,7 @@ bot.on("photo", async (ctx) => {
 // --- Admin commands ---
 
 function isAdmin(userId: number) {
-  return ADMIN_IDS.includes(userId);
+  return ADMIN_IDS.map(Number).includes(Number(userId));
 }
 
 bot.command("confirm", async (ctx) => {
@@ -288,7 +296,7 @@ bot.command("orders", async (ctx) => {
 // --- Startup ---
 
 initDb()
-  .then(() => bot.launch())
+  .then(() => bot.launch({ dropPendingUpdates: true }))
   .then(() => console.log(`${RESTAURANT.name} bot is running.`))
   .catch((err) => console.error("Startup error:", err));
 
