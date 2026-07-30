@@ -66,13 +66,13 @@ async function toggleAvailability(itemId: string): Promise<boolean> {
 async function menuKeyboard() {
   const availableItems = await getAvailableMenu();
   const buttons = availableItems.map((item) =>
-    Markup.button.callback(`${item.name} — ${item.price} birr`, `add_${item.id}`)
+    Markup.button.callback(`${item.name} — ${item.price} ብር`, `add_${item.id}`)
   );
   const rows = [];
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
-  rows.push([Markup.button.callback("🛒 View Cart", "view_cart")]);
+  rows.push([Markup.button.callback("🛒 ቅርጫት ይመልከቱ", "view_cart")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -83,8 +83,8 @@ function cartKeyboard(userId: number) {
     Markup.button.callback("➖", `remove_${item.id}`),
     Markup.button.callback("➕", `add_${item.id}`),
   ]);
-  rows.push([Markup.button.callback("✅ Checkout", "checkout")]);
-  rows.push([Markup.button.callback("🍽 Back to Menu", "back_to_menu")]);
+  rows.push([Markup.button.callback("✅ ትዕዛዝ ያጠናቅቁ", "checkout")]);
+  rows.push([Markup.button.callback("🍽 ወደ ምናሌ ተመለስ", "back_to_menu")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -95,12 +95,12 @@ async function manageMenuKeyboard() {
     const icon = isAvailable ? "✅" : "❌";
     return [
       Markup.button.callback(
-        `${icon} ${item.name} — ${item.price} birr`,
+        `${icon} ${item.name} — ${item.price} ብር`,
         `toggle_${item.id}`
       ),
     ];
   });
-  rows.push([Markup.button.callback("✔️ Done", "manage_done")]);
+  rows.push([Markup.button.callback("✔️ ተጠናቋል", "manage_done")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -117,38 +117,38 @@ bot.start(async (ctx) => {
   const availableItems = await getAvailableMenu();
   if (availableItems.length === 0) {
     return ctx.reply(
-      `Welcome to ${RESTAURANT.name}! 🍽\n${RESTAURANT.location}\n\nSorry, our menu is currently unavailable. Please check back soon!`
+      `እንኳን ወደ ${RESTAURANT.name} በደህና መጡ! 🍽\n${RESTAURANT.location}\n\nይቅርታ፣ ምናሌያችን በአሁኑ ጊዜ አይገኝም። እባክዎ ትንሽ ቆይተው እንደገና ይሞክሩ!`
     );
   }
   ctx.reply(
-    `Welcome to ${RESTAURANT.name}! 🍽\n${RESTAURANT.location}\n\nChoose items to add to your order:`,
+    `እንኳን ወደ ${RESTAURANT.name} በደህና መጡ! 🍽\n${RESTAURANT.location}\n\nወደ ትዕዛዝዎ ለመጨመር እቃዎችን ይምረጡ:`,
     await menuKeyboard()
   );
 });
 
 bot.command("menu", async (ctx) => {
-  ctx.reply("Our menu:", await menuKeyboard());
+  ctx.reply("የእኛ ምናሌ:", await menuKeyboard());
 });
 
 bot.command("manage", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
-  ctx.reply("Manage menu availability — tap to toggle:", await manageMenuKeyboard());
+  ctx.reply("የምናሌ አቅርቦትን ያስተዳድሩ — ለመቀየር ይንኩ:", await manageMenuKeyboard());
 });
 
 bot.command("confirm", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   const orderId = parseInt(ctx.message.text.split(" ")[1], 10);
-  if (!orderId) return ctx.reply("Usage: /confirm <order_id>");
+  if (!orderId) return ctx.reply("አጠቃቀም: /confirm <order_id>");
   await pool.query(`UPDATE orders SET status = 'confirmed' WHERE id = $1`, [orderId]);
   const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
   const order = orderResult.rows[0];
   if (order) {
     await bot.telegram.sendMessage(
       order.customer_telegram_id,
-      `Your order #${orderId} has been confirmed! ${RESTAURANT.name} is preparing it now. 🍽`
+      `ትዕዛዝዎ #${orderId} ተረጋግጧል! ${RESTAURANT.name} አሁን እያዘጋጀው ነው። 🍽`
     );
   }
-  ctx.reply(`Order #${orderId} marked as confirmed.`);
+  ctx.reply(`ትዕዛዝ #${orderId} እንደተረጋገጠ ተመዝግቧል።`);
 });
 
 bot.command("orders", async (ctx) => {
@@ -156,10 +156,10 @@ bot.command("orders", async (ctx) => {
   const result = await pool.query(
     `SELECT id, customer_name, order_type, total_amount, status, created_at FROM orders ORDER BY created_at DESC LIMIT 10`
   );
-  if (result.rows.length === 0) return ctx.reply("No orders yet.");
+  if (result.rows.length === 0) return ctx.reply("እስካሁን ትዕዛዝ የለም።");
   const lines = result.rows.map(
     (o: any) =>
-      `#${o.id} — ${o.customer_name} — ${o.order_type} — ${o.total_amount} birr — ${o.status}`
+      `#${o.id} — ${o.customer_name} — ${o.order_type} — ${o.total_amount} ብር — ${o.status}`
   );
   ctx.reply(lines.join("\n"));
 });
@@ -167,12 +167,12 @@ bot.command("orders", async (ctx) => {
 // --- Menu toggle (admin) ---
 
 bot.action(/^toggle_(.+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("Not authorized.");
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("ፍቃድ የለዎትም።");
   const itemId = ctx.match[1];
   const newState = await toggleAvailability(itemId);
   const item = MENU.find((m) => m.id === itemId);
   await ctx.answerCbQuery(
-    `${item?.name} is now ${newState ? "✅ available" : "❌ unavailable"}`
+    `${item?.name} አሁን ${newState ? "✅ ይገኛል" : "❌ አይገኝም"}`
   );
   try {
     await ctx.editMessageReplyMarkup(
@@ -182,9 +182,9 @@ bot.action(/^toggle_(.+)$/, async (ctx) => {
 });
 
 bot.action("manage_done", async (ctx) => {
-  await ctx.answerCbQuery("Done!");
+  await ctx.answerCbQuery("ተጠናቋል!");
   try {
-    await ctx.editMessageText("Menu updated successfully. ✅");
+    await ctx.editMessageText("ምናሌ በተሳካ ሁኔታ ተዘምኗል። ✅");
   } catch {}
 });
 
@@ -194,15 +194,15 @@ bot.action(/^add_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
   const availableMenu = await getAvailableMenu();
   const item = availableMenu.find((m) => m.id === itemId);
-  if (!item) return ctx.answerCbQuery("Sorry, this item is no longer available.");
+  if (!item) return ctx.answerCbQuery("ይቅርታ፣ ይህ እቃ ከአሁን በኋላ አይገኝም።");
   addToCart(ctx.from.id, item);
-  await ctx.answerCbQuery(`Added ${item.name}`);
+  await ctx.answerCbQuery(`${item.name} ታክሏል`);
 });
 
 bot.action(/^remove_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
   removeFromCart(ctx.from.id, itemId);
-  await ctx.answerCbQuery("Removed");
+  await ctx.answerCbQuery("ተወግዷል");
   await showCart(ctx);
 });
 
@@ -212,7 +212,7 @@ bot.action("noop", async (ctx) => {
 
 bot.action("back_to_menu", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.editMessageText("Our menu:", await menuKeyboard());
+  await ctx.editMessageText("የእኛ ምናሌ:", await menuKeyboard());
 });
 
 bot.action("view_cart", async (ctx) => {
@@ -224,11 +224,11 @@ async function showCart(ctx: any) {
   const userId = ctx.from.id;
   const cart = getCart(userId);
   if (cart.length === 0) {
-    return ctx.editMessageText("Your cart is empty.", await menuKeyboard());
+    return ctx.editMessageText("የግዢ ቅርጫትዎ ባዶ ነው።", await menuKeyboard());
   }
-  const lines = cart.map((i) => `${i.name} x${i.quantity} — ${i.price * i.quantity} birr`);
+  const lines = cart.map((i) => `${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
   const total = cartTotal(userId);
-  const text = `🛒 Your Cart:\n\n${lines.join("\n")}\n\nTotal: ${total} birr`;
+  const text = `🛒 የግዢ ቅርጫትዎ:\n\n${lines.join("\n")}\n\nጠቅላላ: ${total} ብር`;
   try {
     await ctx.editMessageText(text, cartKeyboard(userId));
   } catch {
@@ -242,15 +242,15 @@ bot.action("checkout", async (ctx) => {
   const userId = ctx.from.id;
   const cart = getCart(userId);
   if (cart.length === 0) {
-    return ctx.answerCbQuery("Your cart is empty.");
+    return ctx.answerCbQuery("የግዢ ቅርጫትዎ ባዶ ነው።");
   }
   await ctx.answerCbQuery();
   setDraft(userId, {});
   await ctx.reply(
-    "Is this for delivery or pickup?",
+    "ይህ ለማድረስ (ዴሊቨሪ) ነው ወይስ ለራስዎ ለመውሰድ (ፒክአፕ)?",
     Markup.inlineKeyboard([
-      [Markup.button.callback("🚗 Delivery", "order_type_delivery")],
-      [Markup.button.callback("🏪 Pickup", "order_type_pickup")],
+      [Markup.button.callback("🚗 ማድረስ", "order_type_delivery")],
+      [Markup.button.callback("🏪 መውሰድ", "order_type_pickup")],
     ])
   );
 });
@@ -261,9 +261,9 @@ bot.action(/^order_type_(delivery|pickup)$/, async (ctx) => {
   setDraft(userId, { ...getDraft(userId), orderType });
   await ctx.answerCbQuery();
   if (orderType === "delivery") {
-    await ctx.reply("Please send your delivery address:");
+    await ctx.reply("እባክዎ የማድረሻ አድራሻዎን ይላኩ:");
   } else {
-    await ctx.reply("Please send your full name for the order:");
+    await ctx.reply("እባክዎ ለትዕዛዙ ሙሉ ስምዎን ይላኩ:");
   }
 });
 
@@ -274,12 +274,12 @@ bot.on("text", async (ctx) => {
 
   if (draft.orderType === "delivery" && !draft.deliveryAddress) {
     setDraft(userId, { ...draft, deliveryAddress: ctx.message.text });
-    return ctx.reply("Please send your full name for the order:");
+    return ctx.reply("እባክዎ ለትዕዛዙ ሙሉ ስምዎን ይላኩ:");
   }
 
   if (!draft.customerName) {
     setDraft(userId, { ...draft, customerName: ctx.message.text });
-    return ctx.reply("Please send your phone number:");
+    return ctx.reply("እባክዎ ስልክ ቁጥርዎን ይላኩ:");
   }
 
   if (!draft.customerPhone) {
@@ -312,15 +312,15 @@ async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
   setDraft(userId, { ...draft, awaitingScreenshotFor: orderId });
 
   const summary = cart
-    .map((i) => `${i.name} x${i.quantity} — ${i.price * i.quantity} birr`)
+    .map((i) => `${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`)
     .join("\n");
 
   await ctx.reply(
-    `Order #${orderId} received! ✅\n\n${summary}\n\nTotal: ${total} birr\n\n` +
-      `Please transfer to:\n🏦 ${RESTAURANT.bank.name}\n` +
-      `Account: ${RESTAURANT.bank.account}\n` +
-      `Name: ${RESTAURANT.bank.accountName}\n\n` +
-      `Then send a screenshot of the payment here to confirm your order.`
+    `ትዕዛዝ #${orderId} ደርሶናል! ✅\n\n${summary}\n\nጠቅላላ: ${total} ብር\n\n` +
+      `እባክዎ ወደ ሚከተለው ይላኩ:\n🏦 ${RESTAURANT.bank.name}\n` +
+      `የሂሳብ ቁጥር: ${RESTAURANT.bank.account}\n` +
+      `ስም: ${RESTAURANT.bank.accountName}\n\n` +
+      `ትዕዛዝዎን ለማረጋገጥ የክፍያ ስክሪንሾት እዚህ ይላኩ።`
   );
 
   clearCart(userId);
@@ -331,7 +331,7 @@ bot.on("photo", async (ctx) => {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
   if (!draft.awaitingScreenshotFor) {
-    return ctx.reply("I wasn't expecting a photo right now. Use /menu to start an order.");
+    return ctx.reply("አሁን ፎቶ አልጠበቅሁም ነበር። ትዕዛዝ ለመጀመር /menu ይጠቀሙ።");
   }
 
   const orderId = draft.awaitingScreenshotFor;
@@ -344,8 +344,8 @@ bot.on("photo", async (ctx) => {
   );
 
   await ctx.reply(
-    `Thanks! Your payment screenshot was received for Order #${orderId}. ` +
-      `${RESTAURANT.name} will confirm your order shortly. 🙏`
+    `አመሰግናለሁ! የክፍያ ስክሪንሾትዎ ለትዕዛዝ #${orderId} ደርሶናል። ` +
+      `${RESTAURANT.name} በቅርቡ ትዕዛዝዎን ያረጋግጣል። 🙏`
   );
 
   const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
@@ -353,18 +353,18 @@ bot.on("photo", async (ctx) => {
   const itemsResult = await pool.query(`SELECT * FROM order_items WHERE order_id = $1`, [orderId]);
   const items = itemsResult.rows;
   const itemLines = items
-    .map((i: any) => `${i.item_name} x${i.quantity} — ${i.item_price * i.quantity} birr`)
+    .map((i: any) => `${i.item_name} x${i.quantity} — ${i.item_price * i.quantity} ብር`)
     .join("\n");
 
   const orderTypeLine =
     order.order_type === "delivery"
-      ? `🚗 Delivery to: ${order.delivery_address}`
-      : `🏪 Pickup at ${RESTAURANT.location}`;
+      ? `🚗 ማድረሻ አድራሻ: ${order.delivery_address}`
+      : `🏪 መውሰጃ ቦታ: ${RESTAURANT.location}`;
 
   const adminText =
-    `🆕 New Order #${order.id} — Payment Submitted\n\n` +
+    `🆕 አዲስ ትዕዛዝ #${order.id} — ክፍያ ቀርቧል\n\n` +
     `👤 ${order.customer_name}\n📞 ${order.customer_phone}\n${orderTypeLine}\n\n` +
-    `${itemLines}\n\nTotal: ${order.total_amount} birr`;
+    `${itemLines}\n\nጠቅላላ: ${order.total_amount} ብር`;
 
   for (const adminId of ADMIN_IDS) {
     try {
