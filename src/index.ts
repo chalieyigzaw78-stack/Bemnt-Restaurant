@@ -85,7 +85,7 @@ async function menuKeyboard() {
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
-  rows.push([Markup.button.callback("🛒 የምግብ ዝርዝር ይመልከቱ", "view_cart")]);
+  rows.push([Markup.button.callback("🛒 የመረጡትን የምግብ ዝርዝር ይመልከቱ", "view_cart")]);
   return Markup.inlineKeyboard(rows);
 }
 
