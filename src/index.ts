@@ -61,6 +61,19 @@ async function toggleAvailability(itemId: string): Promise<boolean> {
   return next;
 }
 
+// --- Menu text with cart preview ---
+
+function buildMenuText(userId: number): string {
+  const cart = getCart(userId);
+  let text = `🍽 እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
+  if (cart.length > 0) {
+    const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
+    const total = cartTotal(userId);
+    text = `🛒 የተመረጡ ምግቦች:\n${lines.join("\n")}\n\nድምር: ${total} ብር\n\n────────────────\nለማዘዝ ምግብ ይምረጡ:`;
+  }
+  return text;
+}
+
 // --- Keyboards ---
 
 async function menuKeyboard() {
@@ -72,7 +85,7 @@ async function menuKeyboard() {
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
-  rows.push([Markup.button.callback("🛒 ቅርጫት ይመልከቱ", "view_cart")]);
+  rows.push([Markup.button.callback("🛒 የምግብ ዝርዝር ይመልከቱ", "view_cart")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -83,8 +96,8 @@ function cartKeyboard(userId: number) {
     Markup.button.callback("➖", `remove_${item.id}`),
     Markup.button.callback("➕", `add_${item.id}`),
   ]);
-  rows.push([Markup.button.callback("✅ ትዕዛዝ ያጠናቅቁ", "checkout")]);
-  rows.push([Markup.button.callback("🍽 ወደ ምናሌ ተመለስ", "back_to_menu")]);
+  rows.push([Markup.button.callback("✅ ትዕዛዝ ይፈጽሙ", "checkout")]);
+  rows.push([Markup.button.callback("🍽 ወደ ምግብ ዝርዝር ተመለስ", "back_to_menu")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -117,22 +130,19 @@ bot.start(async (ctx) => {
   const availableItems = await getAvailableMenu();
   if (availableItems.length === 0) {
     return ctx.reply(
-      `እንኳን ወደ ${RESTAURANT.name} በደህና መጡ! 🍽\n${RESTAURANT.location}\n\nይቅርታ፣ ምናሌያችን በአሁኑ ጊዜ አይገኝም። እባክዎ ትንሽ ቆይተው እንደገና ይሞክሩ!`
+      `እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት! 🍽\nጎንደር፣ ማርኪ\n\nየምግብ ዝርዝሩ አሁን አይገኝም። እባክዎ ቆየት ብለው ይሞክሩ!`
     );
   }
-  ctx.reply(
-    `እንኳን ወደ ${RESTAURANT.name} በደህና መጡ! 🍽\n${RESTAURANT.location}\n\nወደ ትዕዛዝዎ ለመጨመር እቃዎችን ይምረጡ:`,
-    await menuKeyboard()
-  );
+  ctx.reply(buildMenuText(ctx.from.id), await menuKeyboard());
 });
 
 bot.command("menu", async (ctx) => {
-  ctx.reply("የእኛ ምናሌ:", await menuKeyboard());
+  ctx.reply(buildMenuText(ctx.from.id), await menuKeyboard());
 });
 
 bot.command("manage", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
-  ctx.reply("የምናሌ አቅርቦትን ያስተዳድሩ — ለመቀየር ይንኩ:", await manageMenuKeyboard());
+  ctx.reply("የምግብ ዝርዝር ያስተዳድሩ — ለመቀየር ይጫኑ:", await manageMenuKeyboard());
 });
 
 bot.command("confirm", async (ctx) => {
@@ -145,10 +155,10 @@ bot.command("confirm", async (ctx) => {
   if (order) {
     await bot.telegram.sendMessage(
       order.customer_telegram_id,
-      `ትዕዛዝዎ #${orderId} ተረጋግጧል! ${RESTAURANT.name} አሁን እያዘጋጀው ነው። 🍽`
+      `ትዕዛዝ #${orderId} ተረጋግጧል! በምነት ሬስቶራንት እያዘጋጀ ነው። 🍽`
     );
   }
-  ctx.reply(`ትዕዛዝ #${orderId} እንደተረጋገጠ ተመዝግቧል።`);
+  ctx.reply(`ትዕዛዝ #${orderId} ተረጋግጧል።`);
 });
 
 bot.command("orders", async (ctx) => {
@@ -156,7 +166,7 @@ bot.command("orders", async (ctx) => {
   const result = await pool.query(
     `SELECT id, customer_name, order_type, total_amount, status, created_at FROM orders ORDER BY created_at DESC LIMIT 10`
   );
-  if (result.rows.length === 0) return ctx.reply("እስካሁን ትዕዛዝ የለም።");
+  if (result.rows.length === 0) return ctx.reply("እስካሁን ምንም ትዕዛዝ የለም።");
   const lines = result.rows.map(
     (o: any) =>
       `#${o.id} — ${o.customer_name} — ${o.order_type} — ${o.total_amount} ብር — ${o.status}`
@@ -167,12 +177,12 @@ bot.command("orders", async (ctx) => {
 // --- Menu toggle (admin) ---
 
 bot.action(/^toggle_(.+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("ፍቃድ የለዎትም።");
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("አልተፈቀደም።");
   const itemId = ctx.match[1];
   const newState = await toggleAvailability(itemId);
   const item = MENU.find((m) => m.id === itemId);
   await ctx.answerCbQuery(
-    `${item?.name} አሁን ${newState ? "✅ ይገኛል" : "❌ አይገኝም"}`
+    `${item?.name} አሁን ${newState ? "✅ አለ" : "❌ የለም"}`
   );
   try {
     await ctx.editMessageReplyMarkup(
@@ -184,7 +194,7 @@ bot.action(/^toggle_(.+)$/, async (ctx) => {
 bot.action("manage_done", async (ctx) => {
   await ctx.answerCbQuery("ተጠናቋል!");
   try {
-    await ctx.editMessageText("ምናሌ በተሳካ ሁኔታ ተዘምኗል። ✅");
+    await ctx.editMessageText("የምግብ ዝርዝር በተሳካ ሁኔታ ተዘምኗል። ✅");
   } catch {}
 });
 
@@ -194,9 +204,15 @@ bot.action(/^add_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
   const availableMenu = await getAvailableMenu();
   const item = availableMenu.find((m) => m.id === itemId);
-  if (!item) return ctx.answerCbQuery("ይቅርታ፣ ይህ እቃ ከአሁን በኋላ አይገኝም።");
+  if (!item) return ctx.answerCbQuery("ይቅርታ፣ ይህ ምግብ አሁን አይገኝም።");
   addToCart(ctx.from.id, item);
-  await ctx.answerCbQuery(`${item.name} ታክሏል`);
+  await ctx.answerCbQuery(`${item.name} ታክሏል ✅`);
+  try {
+    await ctx.editMessageText(
+      buildMenuText(ctx.from.id),
+      await menuKeyboard()
+    );
+  } catch {}
 });
 
 bot.action(/^remove_(.+)$/, async (ctx) => {
@@ -212,7 +228,9 @@ bot.action("noop", async (ctx) => {
 
 bot.action("back_to_menu", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.editMessageText("የእኛ ምናሌ:", await menuKeyboard());
+  try {
+    await ctx.editMessageText(buildMenuText(ctx.from.id), await menuKeyboard());
+  } catch {}
 });
 
 bot.action("view_cart", async (ctx) => {
@@ -224,11 +242,15 @@ async function showCart(ctx: any) {
   const userId = ctx.from.id;
   const cart = getCart(userId);
   if (cart.length === 0) {
-    return ctx.editMessageText("የግዢ ቅርጫትዎ ባዶ ነው።", await menuKeyboard());
+    try {
+      return ctx.editMessageText(buildMenuText(userId), await menuKeyboard());
+    } catch {
+      return ctx.reply(buildMenuText(userId), await menuKeyboard());
+    }
   }
-  const lines = cart.map((i) => `${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
+  const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
   const total = cartTotal(userId);
-  const text = `🛒 የግዢ ቅርጫትዎ:\n\n${lines.join("\n")}\n\nጠቅላላ: ${total} ብር`;
+  const text = `🛒 የምግብ ዝርዝርዎ:\n\n${lines.join("\n")}\n\nድምር: ${total} ብር`;
   try {
     await ctx.editMessageText(text, cartKeyboard(userId));
   } catch {
@@ -242,15 +264,15 @@ bot.action("checkout", async (ctx) => {
   const userId = ctx.from.id;
   const cart = getCart(userId);
   if (cart.length === 0) {
-    return ctx.answerCbQuery("የግዢ ቅርጫትዎ ባዶ ነው።");
+    return ctx.answerCbQuery("የምግብ ዝርዝርዎ ባዶ ነው።");
   }
   await ctx.answerCbQuery();
   setDraft(userId, {});
   await ctx.reply(
-    "ይህ ለማድረስ (ዴሊቨሪ) ነው ወይስ ለራስዎ ለመውሰድ (ፒክአፕ)?",
+    "ዴሊቨሪ ይፈልጋሉ ወይስ እራስዎ ይወስዳሉ?",
     Markup.inlineKeyboard([
-      [Markup.button.callback("🚗 ማድረስ", "order_type_delivery")],
-      [Markup.button.callback("🏪 መውሰድ", "order_type_pickup")],
+      [Markup.button.callback("🚗 ዴሊቨሪ", "order_type_delivery")],
+      [Markup.button.callback("🏪 እራሴ እወስዳለሁ", "order_type_pickup")],
     ])
   );
 });
@@ -261,9 +283,9 @@ bot.action(/^order_type_(delivery|pickup)$/, async (ctx) => {
   setDraft(userId, { ...getDraft(userId), orderType });
   await ctx.answerCbQuery();
   if (orderType === "delivery") {
-    await ctx.reply("እባክዎ የማድረሻ አድራሻዎን ይላኩ:");
+    await ctx.reply("እባክዎ ያሉበትን አድራሻዎን ይላኩ:");
   } else {
-    await ctx.reply("እባክዎ ለትዕዛዙ ሙሉ ስምዎን ይላኩ:");
+    await ctx.reply("እባክዎ ሙሉ ስምዎን ይላኩ:");
   }
 });
 
@@ -274,7 +296,7 @@ bot.on("text", async (ctx) => {
 
   if (draft.orderType === "delivery" && !draft.deliveryAddress) {
     setDraft(userId, { ...draft, deliveryAddress: ctx.message.text });
-    return ctx.reply("እባክዎ ለትዕዛዙ ሙሉ ስምዎን ይላኩ:");
+    return ctx.reply("እባክዎ ሙሉ ስምዎን ይላኩ:");
   }
 
   if (!draft.customerName) {
@@ -312,15 +334,15 @@ async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
   setDraft(userId, { ...draft, awaitingScreenshotFor: orderId });
 
   const summary = cart
-    .map((i) => `${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`)
+    .map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`)
     .join("\n");
 
   await ctx.reply(
-    `ትዕዛዝ #${orderId} ደርሶናል! ✅\n\n${summary}\n\nጠቅላላ: ${total} ብር\n\n` +
-      `እባክዎ ወደ ሚከተለው ይላኩ:\n🏦 ${RESTAURANT.bank.name}\n` +
-      `የሂሳብ ቁጥር: ${RESTAURANT.bank.account}\n` +
+    `ትዕዛዝ #${orderId} ተቀብለናል! ✅\n\n${summary}\n\nድምር: ${total} ብር\n\n` +
+      `እባክዎ ወደ ሂሳብ ቁጥሩ ያስተላልፉ:\n🏦 የኢትዮጵያ ንግድ ባንክ (CBE)\n` +
+      `ሂሳብ ቁጥር: ${RESTAURANT.bank.account}\n` +
       `ስም: ${RESTAURANT.bank.accountName}\n\n` +
-      `ትዕዛዝዎን ለማረጋገጥ የክፍያ ስክሪንሾት እዚህ ይላኩ።`
+      `ክፍያ ከፈጸሙ በኋላ የክፍያ ስክሪንሾት እዚህ ይላኩ።`
   );
 
   clearCart(userId);
@@ -331,7 +353,7 @@ bot.on("photo", async (ctx) => {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
   if (!draft.awaitingScreenshotFor) {
-    return ctx.reply("አሁን ፎቶ አልጠበቅሁም ነበር። ትዕዛዝ ለመጀመር /menu ይጠቀሙ።");
+    return ctx.reply("ፎቶ አልጠበቅሁም። ለማዘዝ /menu ይጫኑ።");
   }
 
   const orderId = draft.awaitingScreenshotFor;
@@ -344,8 +366,7 @@ bot.on("photo", async (ctx) => {
   );
 
   await ctx.reply(
-    `አመሰግናለሁ! የክፍያ ስክሪንሾትዎ ለትዕዛዝ #${orderId} ደርሶናል። ` +
-      `${RESTAURANT.name} በቅርቡ ትዕዛዝዎን ያረጋግጣል። 🙏`
+    `እናመሰግናለን! የክፍያ ስክሪንሾትዎ ለትዕዛዝ #${orderId} ደርሷል። በምነት ሬስቶራንት በቅርቡ ያረጋግጥልዎታል። 🙏`
   );
 
   const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
@@ -353,18 +374,18 @@ bot.on("photo", async (ctx) => {
   const itemsResult = await pool.query(`SELECT * FROM order_items WHERE order_id = $1`, [orderId]);
   const items = itemsResult.rows;
   const itemLines = items
-    .map((i: any) => `${i.item_name} x${i.quantity} — ${i.item_price * i.quantity} ብር`)
+    .map((i: any) => `• ${i.item_name} x${i.quantity} — ${i.item_price * i.quantity} ብር`)
     .join("\n");
 
   const orderTypeLine =
     order.order_type === "delivery"
-      ? `🚗 ማድረሻ አድራሻ: ${order.delivery_address}`
-      : `🏪 መውሰጃ ቦታ: ${RESTAURANT.location}`;
+      ? `🚗 ዴሊቨሪ አድራሻ: ${order.delivery_address}`
+      : `🏪 እራሱ ይወስዳል — ${RESTAURANT.location}`;
 
   const adminText =
-    `🆕 አዲስ ትዕዛዝ #${order.id} — ክፍያ ቀርቧል\n\n` +
+    `🆕 አዲስ ትዕዛዝ #${order.id} — ክፍያ ተልኳል\n\n` +
     `👤 ${order.customer_name}\n📞 ${order.customer_phone}\n${orderTypeLine}\n\n` +
-    `${itemLines}\n\nጠቅላላ: ${order.total_amount} ብር`;
+    `${itemLines}\n\nድምር: ${order.total_amount} ብር`;
 
   for (const adminId of ADMIN_IDS) {
     try {
