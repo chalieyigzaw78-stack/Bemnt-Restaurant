@@ -65,7 +65,7 @@ async function toggleAvailability(itemId: string): Promise<boolean> {
 
 function buildMenuText(userId: number): string {
   const cart = getCart(userId);
-  let text = `🍽 እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
+  let text = `🍽 እንኳን ወደ በምነት ሬስቶራንት በደህና መጡ!!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
   if (cart.length > 0) {
     const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
     const total = cartTotal(userId);
