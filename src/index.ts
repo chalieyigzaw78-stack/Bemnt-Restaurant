@@ -19,9 +19,9 @@ dotenv.config();
 http.createServer((_, res) => res.end("OK")).listen(process.env.PORT || 3000);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-if (!BOT_TOKEN) throw new Error("BOT_TOKEN is not set.");
-
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+if (!BOT_TOKEN) {
+  throw new Error("BOT_TOKEN is not set in environment variables.");
+}
 
 const bot = new Telegraf(BOT_TOKEN);
 
@@ -61,117 +61,9 @@ async function toggleAvailability(itemId: string): Promise<boolean> {
   return next;
 }
 
-// --- Price editing helper ---
-
-async function getPrice(itemId: string): Promise<number> {
-  const result = await pool.query(
-    `SELECT price FROM menu_prices WHERE item_id = $1`,
-    [itemId]
-  );
-  if (result.rows.length > 0) return result.rows[0].price;
-  const item = MENU.find((m) => m.id === itemId);
-  return item?.price ?? 0;
-}
-
-async function getFullMenu() {
-  const avail = await getAvailability();
-  const prices = await pool.query(`SELECT item_id, price FROM menu_prices`);
-  const priceMap: Record<string, number> = {};
-  for (const row of prices.rows) {
-    priceMap[row.item_id] = row.price;
-  }
-  return MENU.map((item) => ({
-    ...item,
-    price: priceMap[item.id] ?? item.price,
-    available: avail[item.id] !== false,
-  }));
-}
-
-async function getAvailableMenuWithPrices() {
-  const full = await getFullMenu();
-  return full.filter((item) => item.available);
-}
-
-// --- Payment screenshot verification via Claude Vision ---
-
-async function verifyPaymentScreenshot(fileId: string): Promise<boolean> {
-  if (!ANTHROPIC_API_KEY) {
-    console.warn("No ANTHROPIC_API_KEY set — skipping screenshot verification.");
-    return true;
-  }
-
-  try {
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${await getFilePath(fileId)}`;
-    const imageResp = await fetch(fileUrl);
-    const arrayBuffer = await imageResp.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString("base64");
-    const mimeType = "image/jpeg";
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-opus-4-6",
-        max_tokens: 200,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: { type: "base64", media_type: mimeType, data: base64 },
-              },
-              {
-                type: "text",
-                text: `Look at this image carefully. 
-Answer ONLY with "VALID" or "INVALID".
-
-Answer VALID if ALL of these are true:
-1. The image looks like a bank transfer or mobile payment receipt/screenshot
-2. It contains at least one of these words (case insensitive): "Chalie", "Yigzaw", or "Assfaw"
-
-Answer INVALID if either condition is not met.
-
-Reply with ONLY the single word VALID or INVALID, nothing else.`,
-              },
-            ],
-          },
-        ],
-      }),
-    });
-
-    const data = await response.json();
-    const answer = data?.content?.[0]?.text?.trim().toUpperCase();
-    console.log("Screenshot verification result:", answer);
-    return answer === "VALID";
-  } catch (err) {
-    console.error("Screenshot verification error:", err);
-    return true;
-  }
-}
-
-async function getFilePath(fileId: string): Promise<string> {
-  const resp = await fetch(
-    `https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`
-  );
-  const data = await resp.json();
-  return data.result.file_path;
-}
-
-// --- Phone validation ---
-
-function isValidPhone(phone: string): boolean {
-  const cleaned = phone.replace(/\s+/g, "");
-  return /^(09|07)\d{8}$/.test(cleaned);
-}
-
 // --- Menu text with cart preview ---
 
-function buildMenuText(userId: number, items: { name: string; price: number }[]): string {
+function buildMenuText(userId: number): string {
   const cart = getCart(userId);
   let text = `🍽 እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
   if (cart.length > 0) {
@@ -184,12 +76,12 @@ function buildMenuText(userId: number, items: { name: string; price: number }[])
 
 // --- Keyboards ---
 
-async function menuKeyboard(userId: number) {
-  const availableItems = await getAvailableMenuWithPrices();
+async function menuKeyboard() {
+  const availableItems = await getAvailableMenu();
   const buttons = availableItems.map((item) =>
     Markup.button.callback(`${item.name} — ${item.price} ብር`, `add_${item.id}`)
   );
-  const rows: any[] = [];
+  const rows = [];
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
@@ -199,7 +91,7 @@ async function menuKeyboard(userId: number) {
 
 function cartKeyboard(userId: number) {
   const cart = getCart(userId);
-  const rows: any[] = cart.map((item) => [
+  const rows = cart.map((item) => [
     Markup.button.callback(`${item.name} x${item.quantity}`, "noop"),
     Markup.button.callback("➖", `remove_${item.id}`),
     Markup.button.callback("➕", `add_${item.id}`),
@@ -210,9 +102,10 @@ function cartKeyboard(userId: number) {
 }
 
 async function manageMenuKeyboard() {
-  const full = await getFullMenu();
-  const rows: any[] = full.map((item) => {
-    const icon = item.available ? "✅" : "❌";
+  const avail = await getAvailability();
+  const rows = MENU.map((item) => {
+    const isAvailable = avail[item.id] !== false;
+    const icon = isAvailable ? "✅" : "❌";
     return [
       Markup.button.callback(
         `${icon} ${item.name} — ${item.price} ብር`,
@@ -224,56 +117,32 @@ async function manageMenuKeyboard() {
   return Markup.inlineKeyboard(rows);
 }
 
-// --- Admin check ---
+// --- Commands ---
 
 function isAdmin(userId: number) {
   return ADMIN_IDS.map(Number).includes(Number(userId));
 }
 
-// --- Commands ---
-
 bot.start(async (ctx) => {
   console.log("Telegram user ID:", ctx.from.id);
   clearCart(ctx.from.id);
   clearDraft(ctx.from.id);
-  const availableItems = await getAvailableMenuWithPrices();
+  const availableItems = await getAvailableMenu();
   if (availableItems.length === 0) {
     return ctx.reply(
       `እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት! 🍽\nጎንደር፣ ማርኪ\n\nየምግብ ዝርዝሩ አሁን አይገኝም። እባክዎ ቆየት ብለው ይሞክሩ!`
     );
   }
-  ctx.reply(buildMenuText(ctx.from.id, availableItems), await menuKeyboard(ctx.from.id));
+  ctx.reply(buildMenuText(ctx.from.id), await menuKeyboard());
 });
 
 bot.command("menu", async (ctx) => {
-  const availableItems = await getAvailableMenuWithPrices();
-  ctx.reply(buildMenuText(ctx.from.id, availableItems), await menuKeyboard(ctx.from.id));
+  ctx.reply(buildMenuText(ctx.from.id), await menuKeyboard());
 });
 
 bot.command("manage", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   ctx.reply("የምግብ ዝርዝር ያስተዳድሩ — ለመቀየር ይጫኑ:", await manageMenuKeyboard());
-});
-
-bot.command("setprice", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return;
-  const parts = ctx.message.text.split(" ");
-  if (parts.length !== 3) return ctx.reply("አጠቃቀም: /setprice <item_id> <ዋጋ>\nምሳሌ: /setprice tibs 550");
-  const itemId = parts[1].toLowerCase();
-  const newPrice = parseInt(parts[2], 10);
-  if (isNaN(newPrice) || newPrice <= 0) return ctx.reply("ዋጋው ትክክል አይደለም።");
-  const item = MENU.find((m) => m.id === itemId);
-  if (!item) {
-    const ids = MENU.map((m) => m.id).join(", ");
-    return ctx.reply(`ምግቡ አልተገኘም። ትክክለኛ ID ይጠቀሙ:\n${ids}`);
-  }
-  await pool.query(
-    `INSERT INTO menu_prices (item_id, price)
-     VALUES ($1, $2)
-     ON CONFLICT (item_id) DO UPDATE SET price = $2`,
-    [itemId, newPrice]
-  );
-  ctx.reply(`✅ ${item.name} ዋጋ ወደ ${newPrice} ብር ተቀይሯል።`);
 });
 
 bot.command("confirm", async (ctx) => {
@@ -290,22 +159,6 @@ bot.command("confirm", async (ctx) => {
     );
   }
   ctx.reply(`ትዕዛዝ #${orderId} ተረጋግጧል።`);
-});
-
-bot.command("cancel", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return;
-  const orderId = parseInt(ctx.message.text.split(" ")[1], 10);
-  if (!orderId) return ctx.reply("አጠቃቀም: /cancel <order_id>");
-  await pool.query(`UPDATE orders SET status = 'cancelled' WHERE id = $1`, [orderId]);
-  const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
-  const order = orderResult.rows[0];
-  if (order) {
-    await bot.telegram.sendMessage(
-      order.customer_telegram_id,
-      `ትዕዛዝ #${orderId} ተሰርዟል። ለበለጠ መረጃ በምነት ሬስቶራንትን ያግኙ። 📞 ${RESTAURANT.phone}`
-    );
-  }
-  ctx.reply(`ትዕዛዝ #${orderId} ተሰርዟል።`);
 });
 
 bot.command("orders", async (ctx) => {
@@ -328,9 +181,13 @@ bot.action(/^toggle_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
   const newState = await toggleAvailability(itemId);
   const item = MENU.find((m) => m.id === itemId);
-  await ctx.answerCbQuery(`${item?.name} አሁን ${newState ? "✅ አለ" : "❌ የለም"}`);
+  await ctx.answerCbQuery(
+    `${item?.name} አሁን ${newState ? "✅ አለ" : "❌ የለም"}`
+  );
   try {
-    await ctx.editMessageReplyMarkup((await manageMenuKeyboard()).reply_markup);
+    await ctx.editMessageReplyMarkup(
+      (await manageMenuKeyboard()).reply_markup
+    );
   } catch {}
 });
 
@@ -345,15 +202,15 @@ bot.action("manage_done", async (ctx) => {
 
 bot.action(/^add_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
-  const availableItems = await getAvailableMenuWithPrices();
-  const item = availableItems.find((m) => m.id === itemId);
+  const availableMenu = await getAvailableMenu();
+  const item = availableMenu.find((m) => m.id === itemId);
   if (!item) return ctx.answerCbQuery("ይቅርታ፣ ይህ ምግብ አሁን አይገኝም።");
   addToCart(ctx.from.id, item);
   await ctx.answerCbQuery(`${item.name} ታክሏል ✅`);
   try {
     await ctx.editMessageText(
-      buildMenuText(ctx.from.id, availableItems),
-      await menuKeyboard(ctx.from.id)
+      buildMenuText(ctx.from.id),
+      await menuKeyboard()
     );
   } catch {}
 });
@@ -371,12 +228,8 @@ bot.action("noop", async (ctx) => {
 
 bot.action("back_to_menu", async (ctx) => {
   await ctx.answerCbQuery();
-  const availableItems = await getAvailableMenuWithPrices();
   try {
-    await ctx.editMessageText(
-      buildMenuText(ctx.from.id, availableItems),
-      await menuKeyboard(ctx.from.id)
-    );
+    await ctx.editMessageText(buildMenuText(ctx.from.id), await menuKeyboard());
   } catch {}
 });
 
@@ -388,12 +241,11 @@ bot.action("view_cart", async (ctx) => {
 async function showCart(ctx: any) {
   const userId = ctx.from.id;
   const cart = getCart(userId);
-  const availableItems = await getAvailableMenuWithPrices();
   if (cart.length === 0) {
     try {
-      return ctx.editMessageText(buildMenuText(userId, availableItems), await menuKeyboard(userId));
+      return ctx.editMessageText(buildMenuText(userId), await menuKeyboard());
     } catch {
-      return ctx.reply(buildMenuText(userId, availableItems), await menuKeyboard(userId));
+      return ctx.reply(buildMenuText(userId), await menuKeyboard());
     }
   }
   const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
@@ -411,7 +263,9 @@ async function showCart(ctx: any) {
 bot.action("checkout", async (ctx) => {
   const userId = ctx.from.id;
   const cart = getCart(userId);
-  if (cart.length === 0) return ctx.answerCbQuery("የምግብ ዝርዝርዎ ባዶ ነው።");
+  if (cart.length === 0) {
+    return ctx.answerCbQuery("የምግብ ዝርዝርዎ ባዶ ነው።");
+  }
   await ctx.answerCbQuery();
   setDraft(userId, {});
   await ctx.reply(
@@ -451,13 +305,7 @@ bot.on("text", async (ctx) => {
   }
 
   if (!draft.customerPhone) {
-    const phone = ctx.message.text.replace(/\s+/g, "");
-    if (!isValidPhone(phone)) {
-      return ctx.reply(
-        "❌ ስልክ ቁጥሩ ትክክል አይደለም።\nቁጥሩ በ 09 ወይም 07 መጀመር እና ትክክለኛ 10 አሃዝ መሆን አለበት።\nምሳሌ: 0911223344\n\nእባክዎ እንደገና ይሞክሩ:"
-      );
-    }
-    const updatedDraft = { ...draft, customerPhone: phone };
+    const updatedDraft = { ...draft, customerPhone: ctx.message.text };
     setDraft(userId, updatedDraft);
     await finalizeOrder(ctx, updatedDraft);
     return;
@@ -500,8 +348,7 @@ async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
   clearCart(userId);
 }
 
-// --- Handle payment screenshot ---
-
+// Handle payment screenshot
 bot.on("photo", async (ctx) => {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
@@ -512,16 +359,6 @@ bot.on("photo", async (ctx) => {
   const orderId = draft.awaitingScreenshotFor;
   const photos = ctx.message.photo;
   const fileId = photos[photos.length - 1].file_id;
-
-  await ctx.reply("⏳ ክፍያዎን እየተረጋገጠ ነው፣ እባክዎ ይጠብቁ...");
-
-  const isValid = await verifyPaymentScreenshot(fileId);
-
-  if (!isValid) {
-    return ctx.reply(
-      "❌ ልክ ያልሆነ ክፍያ !! እባኮ ትክክለኛውን ክፍያ መላኮን ያረጋግጡ እና እንደገና ይሞክሩ።"
-    );
-  }
 
   await pool.query(
     `UPDATE orders SET payment_screenshot_file_id = $1, status = 'payment_submitted' WHERE id = $2`,
