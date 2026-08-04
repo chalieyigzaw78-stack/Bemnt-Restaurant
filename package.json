@@ -11,8 +11,7 @@
   "dependencies": {
     "telegraf": "^4.16.3",
     "pg": "^8.12.0",
-    "dotenv": "^16.4.5",
-    "node-tesseract-ocr": "^2.2.1"
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
