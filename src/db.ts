@@ -39,5 +39,12 @@ export async function initDb() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS menu_price_overrides (
+      item_id TEXT PRIMARY KEY,
+      price INTEGER NOT NULL
+    );
+  `);
+
   console.log("Database initialized.");
 }
