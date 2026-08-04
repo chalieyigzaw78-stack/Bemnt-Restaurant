@@ -1,10 +1,6 @@
 import { Telegraf, Markup } from "telegraf";
 import http from "http";
 import dotenv from "dotenv";
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
-import tesseract from "node-tesseract-ocr";
 import { pool, initDb } from "./db";
 import { RESTAURANT, ADMIN_IDS, MENU } from "./config";
 import {
@@ -24,6 +20,8 @@ http.createServer((_, res) => res.end("OK")).listen(process.env.PORT || 3000);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN is not set.");
+
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 const bot = new Telegraf(BOT_TOKEN);
 
@@ -63,7 +61,17 @@ async function toggleAvailability(itemId: string): Promise<boolean> {
   return next;
 }
 
-// --- Price helpers ---
+// --- Price editing helper ---
+
+async function getPrice(itemId: string): Promise<number> {
+  const result = await pool.query(
+    `SELECT price FROM menu_prices WHERE item_id = $1`,
+    [itemId]
+  );
+  if (result.rows.length > 0) return result.rows[0].price;
+  const item = MENU.find((m) => m.id === itemId);
+  return item?.price ?? 0;
+}
 
 async function getFullMenu() {
   const avail = await getAvailability();
@@ -84,6 +92,76 @@ async function getAvailableMenuWithPrices() {
   return full.filter((item) => item.available);
 }
 
+// --- Payment screenshot verification via Claude Vision ---
+
+async function verifyPaymentScreenshot(fileId: string): Promise<boolean> {
+  if (!ANTHROPIC_API_KEY) {
+    console.warn("No ANTHROPIC_API_KEY set — skipping screenshot verification.");
+    return true;
+  }
+
+  try {
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${await getFilePath(fileId)}`;
+    const imageResp = await fetch(fileUrl);
+    const arrayBuffer = await imageResp.arrayBuffer();
+    const base64 = Buffer.from(arrayBuffer).toString("base64");
+    const mimeType = "image/jpeg";
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-6",
+        max_tokens: 200,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: { type: "base64", media_type: mimeType, data: base64 },
+              },
+              {
+                type: "text",
+                text: `Look at this image carefully. 
+Answer ONLY with "VALID" or "INVALID".
+
+Answer VALID if ALL of these are true:
+1. The image looks like a bank transfer or mobile payment receipt/screenshot
+2. It contains at least one of these words (case insensitive): "Chalie", "Yigzaw", or "Assfaw"
+
+Answer INVALID if either condition is not met.
+
+Reply with ONLY the single word VALID or INVALID, nothing else.`,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    const data = await response.json();
+    const answer = data?.content?.[0]?.text?.trim().toUpperCase();
+    console.log("Screenshot verification result:", answer);
+    return answer === "VALID";
+  } catch (err) {
+    console.error("Screenshot verification error:", err);
+    return true;
+  }
+}
+
+async function getFilePath(fileId: string): Promise<string> {
+  const resp = await fetch(
+    `https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`
+  );
+  const data = await resp.json();
+  return data.result.file_path;
+}
+
 // --- Phone validation ---
 
 function isValidPhone(phone: string): boolean {
@@ -91,74 +169,22 @@ function isValidPhone(phone: string): boolean {
   return /^(09|07)\d{8}$/.test(cleaned);
 }
 
-// --- Tesseract OCR screenshot verification ---
-
-async function verifyPaymentScreenshot(fileId: string): Promise<boolean> {
-  let tmpFile: string | null = null;
-  try {
-    // Download image from Telegram
-    const fileResp = await fetch(
-      `https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`
-    );
-    const fileData = await fileResp.json();
-    const filePath = fileData.result.file_path;
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
-
-    const imageResp = await fetch(fileUrl);
-    const buffer = Buffer.from(await imageResp.arrayBuffer());
-
-    // Save to temp file
-    tmpFile = path.join(os.tmpdir(), `payment_${Date.now()}.jpg`);
-    fs.writeFileSync(tmpFile, buffer);
-
-    // Run Tesseract OCR
-    const text = await tesseract.recognize(tmpFile, {
-      lang: "eng",
-      oem: 1,
-      psm: 3,
-    });
-
-    console.log("OCR extracted text:", text);
-
-    // Check for name keywords (case insensitive)
-    const lower = text.toLowerCase();
-    const hasName =
-      lower.includes("chalie") ||
-      lower.includes("yigzaw") ||
-      lower.includes("assfaw") ||
-      lower.includes("yigsaw") || // common OCR misread
-      lower.includes("chaliye");  // common OCR misread
-
-    console.log("Name found in screenshot:", hasName);
-    return hasName;
-
-  } catch (err) {
-    console.error("OCR verification error:", err);
-    // If Tesseract not available on this server, skip verification
-    return true;
-  } finally {
-    // Clean up temp file
-    if (tmpFile && fs.existsSync(tmpFile)) {
-      fs.unlinkSync(tmpFile);
-    }
-  }
-}
-
 // --- Menu text with cart preview ---
 
-function buildMenuText(userId: number): string {
+function buildMenuText(userId: number, items: { name: string; price: number }[]): string {
   const cart = getCart(userId);
+  let text = `🍽 እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
   if (cart.length > 0) {
     const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
     const total = cartTotal(userId);
-    return `🛒 የተመረጡ ምግቦች:\n${lines.join("\n")}\n\nድምር: ${total} ብር\n\n────────────────\nለማዘዝ ምግብ ይምረጡ:`;
+    text = `🛒 የተመረጡ ምግቦች:\n${lines.join("\n")}\n\nድምር: ${total} ብር\n\n────────────────\nለማዘዝ ምግብ ይምረጡ:`;
   }
-  return `🍽 እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
+  return text;
 }
 
 // --- Keyboards ---
 
-async function menuKeyboard() {
+async function menuKeyboard(userId: number) {
   const availableItems = await getAvailableMenuWithPrices();
   const buttons = availableItems.map((item) =>
     Markup.button.callback(`${item.name} — ${item.price} ብር`, `add_${item.id}`)
@@ -216,11 +242,12 @@ bot.start(async (ctx) => {
       `እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት! 🍽\nጎንደር፣ ማርኪ\n\nየምግብ ዝርዝሩ አሁን አይገኝም። እባክዎ ቆየት ብለው ይሞክሩ!`
     );
   }
-  ctx.reply(buildMenuText(ctx.from.id), await menuKeyboard());
+  ctx.reply(buildMenuText(ctx.from.id, availableItems), await menuKeyboard(ctx.from.id));
 });
 
 bot.command("menu", async (ctx) => {
-  ctx.reply(buildMenuText(ctx.from.id), await menuKeyboard());
+  const availableItems = await getAvailableMenuWithPrices();
+  ctx.reply(buildMenuText(ctx.from.id, availableItems), await menuKeyboard(ctx.from.id));
 });
 
 bot.command("manage", async (ctx) => {
@@ -324,7 +351,10 @@ bot.action(/^add_(.+)$/, async (ctx) => {
   addToCart(ctx.from.id, item);
   await ctx.answerCbQuery(`${item.name} ታክሏል ✅`);
   try {
-    await ctx.editMessageText(buildMenuText(ctx.from.id), await menuKeyboard());
+    await ctx.editMessageText(
+      buildMenuText(ctx.from.id, availableItems),
+      await menuKeyboard(ctx.from.id)
+    );
   } catch {}
 });
 
@@ -341,8 +371,12 @@ bot.action("noop", async (ctx) => {
 
 bot.action("back_to_menu", async (ctx) => {
   await ctx.answerCbQuery();
+  const availableItems = await getAvailableMenuWithPrices();
   try {
-    await ctx.editMessageText(buildMenuText(ctx.from.id), await menuKeyboard());
+    await ctx.editMessageText(
+      buildMenuText(ctx.from.id, availableItems),
+      await menuKeyboard(ctx.from.id)
+    );
   } catch {}
 });
 
@@ -354,11 +388,12 @@ bot.action("view_cart", async (ctx) => {
 async function showCart(ctx: any) {
   const userId = ctx.from.id;
   const cart = getCart(userId);
+  const availableItems = await getAvailableMenuWithPrices();
   if (cart.length === 0) {
     try {
-      return ctx.editMessageText(buildMenuText(userId), await menuKeyboard());
+      return ctx.editMessageText(buildMenuText(userId, availableItems), await menuKeyboard(userId));
     } catch {
-      return ctx.reply(buildMenuText(userId), await menuKeyboard());
+      return ctx.reply(buildMenuText(userId, availableItems), await menuKeyboard(userId));
     }
   }
   const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
