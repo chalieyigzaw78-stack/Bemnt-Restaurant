@@ -1,6 +1,10 @@
 import { Telegraf, Markup } from "telegraf";
 import http from "http";
 import dotenv from "dotenv";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+import tesseract from "node-tesseract-ocr";
 import { pool, initDb } from "./db";
 import { RESTAURANT, ADMIN_IDS, MENU } from "./config";
 import {
@@ -19,9 +23,7 @@ dotenv.config();
 http.createServer((_, res) => res.end("OK")).listen(process.env.PORT || 3000);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-if (!BOT_TOKEN) {
-  throw new Error("BOT_TOKEN is not set in environment variables.");
-}
+if (!BOT_TOKEN) throw new Error("BOT_TOKEN is not set.");
 
 const bot = new Telegraf(BOT_TOKEN);
 
@@ -61,37 +63,117 @@ async function toggleAvailability(itemId: string): Promise<boolean> {
   return next;
 }
 
+// --- Price helpers ---
+
+async function getFullMenu() {
+  const avail = await getAvailability();
+  const prices = await pool.query(`SELECT item_id, price FROM menu_prices`);
+  const priceMap: Record<string, number> = {};
+  for (const row of prices.rows) {
+    priceMap[row.item_id] = row.price;
+  }
+  return MENU.map((item) => ({
+    ...item,
+    price: priceMap[item.id] ?? item.price,
+    available: avail[item.id] !== false,
+  }));
+}
+
+async function getAvailableMenuWithPrices() {
+  const full = await getFullMenu();
+  return full.filter((item) => item.available);
+}
+
+// --- Phone validation ---
+
+function isValidPhone(phone: string): boolean {
+  const cleaned = phone.replace(/\s+/g, "");
+  return /^(09|07)\d{8}$/.test(cleaned);
+}
+
+// --- Tesseract OCR screenshot verification ---
+
+async function verifyPaymentScreenshot(fileId: string): Promise<boolean> {
+  let tmpFile: string | null = null;
+  try {
+    // Download image from Telegram
+    const fileResp = await fetch(
+      `https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`
+    );
+    const fileData = await fileResp.json();
+    const filePath = fileData.result.file_path;
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
+
+    const imageResp = await fetch(fileUrl);
+    const buffer = Buffer.from(await imageResp.arrayBuffer());
+
+    // Save to temp file
+    tmpFile = path.join(os.tmpdir(), `payment_${Date.now()}.jpg`);
+    fs.writeFileSync(tmpFile, buffer);
+
+    // Run Tesseract OCR
+    const text = await tesseract.recognize(tmpFile, {
+      lang: "eng",
+      oem: 1,
+      psm: 3,
+    });
+
+    console.log("OCR extracted text:", text);
+
+    // Check for name keywords (case insensitive)
+    const lower = text.toLowerCase();
+    const hasName =
+      lower.includes("chalie") ||
+      lower.includes("yigzaw") ||
+      lower.includes("assfaw") ||
+      lower.includes("yigsaw") || // common OCR misread
+      lower.includes("chaliye");  // common OCR misread
+
+    console.log("Name found in screenshot:", hasName);
+    return hasName;
+
+  } catch (err) {
+    console.error("OCR verification error:", err);
+    // If Tesseract not available on this server, skip verification
+    return true;
+  } finally {
+    // Clean up temp file
+    if (tmpFile && fs.existsSync(tmpFile)) {
+      fs.unlinkSync(tmpFile);
+    }
+  }
+}
+
 // --- Menu text with cart preview ---
 
 function buildMenuText(userId: number): string {
   const cart = getCart(userId);
-  let text = `🍽 እንኳን ወደ በምነት ሬስቶራንት በደህና መጡ!!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
   if (cart.length > 0) {
     const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
     const total = cartTotal(userId);
-    text = `🛒 የተመረጡ ምግቦች:\n${lines.join("\n")}\n\nድምር: ${total} ብር\n\n────────────────\nለማዘዝ ምግብ ይምረጡ:`;
+    return `🛒 የተመረጡ ምግቦች:\n${lines.join("\n")}\n\nድምር: ${total} ብር\n\n────────────────\nለማዘዝ ምግብ ይምረጡ:`;
   }
-  return text;
+  return `🍽 እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
 }
 
 // --- Keyboards ---
 
 async function menuKeyboard() {
-  const availableItems = await getAvailableMenu();
+  const availableItems = await getAvailableMenuWithPrices();
   const buttons = availableItems.map((item) =>
     Markup.button.callback(`${item.name} — ${item.price} ብር`, `add_${item.id}`)
   );
-  const rows = [];
+  const rows: any[] = [];
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
-  rows.push([Markup.button.callback("🛒 የመረጡትን የምግብ ዝርዝር ይመልከቱ", "view_cart")]);
+  rows.push([Markup.button.callback("🛒 የምግብ ዝርዝር ይመልከቱ", "view_cart")]);
   return Markup.inlineKeyboard(rows);
 }
 
 function cartKeyboard(userId: number) {
   const cart = getCart(userId);
-  const rows = cart.map((item) => [
+  const rows: any[] = cart.map((item) => [
     Markup.button.callback(`${item.name} x${item.quantity}`, "noop"),
     Markup.button.callback("➖", `remove_${item.id}`),
     Markup.button.callback("➕", `add_${item.id}`),
@@ -102,10 +184,9 @@ function cartKeyboard(userId: number) {
 }
 
 async function manageMenuKeyboard() {
-  const avail = await getAvailability();
-  const rows = MENU.map((item) => {
-    const isAvailable = avail[item.id] !== false;
-    const icon = isAvailable ? "✅" : "❌";
+  const full = await getFullMenu();
+  const rows: any[] = full.map((item) => {
+    const icon = item.available ? "✅" : "❌";
     return [
       Markup.button.callback(
         `${icon} ${item.name} — ${item.price} ብር`,
@@ -117,17 +198,19 @@ async function manageMenuKeyboard() {
   return Markup.inlineKeyboard(rows);
 }
 
-// --- Commands ---
+// --- Admin check ---
 
 function isAdmin(userId: number) {
   return ADMIN_IDS.map(Number).includes(Number(userId));
 }
 
+// --- Commands ---
+
 bot.start(async (ctx) => {
   console.log("Telegram user ID:", ctx.from.id);
   clearCart(ctx.from.id);
   clearDraft(ctx.from.id);
-  const availableItems = await getAvailableMenu();
+  const availableItems = await getAvailableMenuWithPrices();
   if (availableItems.length === 0) {
     return ctx.reply(
       `እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት! 🍽\nጎንደር፣ ማርኪ\n\nየምግብ ዝርዝሩ አሁን አይገኝም። እባክዎ ቆየት ብለው ይሞክሩ!`
@@ -145,6 +228,27 @@ bot.command("manage", async (ctx) => {
   ctx.reply("የምግብ ዝርዝር ያስተዳድሩ — ለመቀየር ይጫኑ:", await manageMenuKeyboard());
 });
 
+bot.command("setprice", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const parts = ctx.message.text.split(" ");
+  if (parts.length !== 3) return ctx.reply("አጠቃቀም: /setprice <item_id> <ዋጋ>\nምሳሌ: /setprice tibs 550");
+  const itemId = parts[1].toLowerCase();
+  const newPrice = parseInt(parts[2], 10);
+  if (isNaN(newPrice) || newPrice <= 0) return ctx.reply("ዋጋው ትክክል አይደለም።");
+  const item = MENU.find((m) => m.id === itemId);
+  if (!item) {
+    const ids = MENU.map((m) => m.id).join(", ");
+    return ctx.reply(`ምግቡ አልተገኘም። ትክክለኛ ID ይጠቀሙ:\n${ids}`);
+  }
+  await pool.query(
+    `INSERT INTO menu_prices (item_id, price)
+     VALUES ($1, $2)
+     ON CONFLICT (item_id) DO UPDATE SET price = $2`,
+    [itemId, newPrice]
+  );
+  ctx.reply(`✅ ${item.name} ዋጋ ወደ ${newPrice} ብር ተቀይሯል።`);
+});
+
 bot.command("confirm", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   const orderId = parseInt(ctx.message.text.split(" ")[1], 10);
@@ -159,6 +263,22 @@ bot.command("confirm", async (ctx) => {
     );
   }
   ctx.reply(`ትዕዛዝ #${orderId} ተረጋግጧል።`);
+});
+
+bot.command("cancel", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const orderId = parseInt(ctx.message.text.split(" ")[1], 10);
+  if (!orderId) return ctx.reply("አጠቃቀም: /cancel <order_id>");
+  await pool.query(`UPDATE orders SET status = 'cancelled' WHERE id = $1`, [orderId]);
+  const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
+  const order = orderResult.rows[0];
+  if (order) {
+    await bot.telegram.sendMessage(
+      order.customer_telegram_id,
+      `ትዕዛዝ #${orderId} ተሰርዟል። ለበለጠ መረጃ በምነት ሬስቶራንትን ያግኙ። 📞 ${RESTAURANT.phone}`
+    );
+  }
+  ctx.reply(`ትዕዛዝ #${orderId} ተሰርዟል።`);
 });
 
 bot.command("orders", async (ctx) => {
@@ -181,13 +301,9 @@ bot.action(/^toggle_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
   const newState = await toggleAvailability(itemId);
   const item = MENU.find((m) => m.id === itemId);
-  await ctx.answerCbQuery(
-    `${item?.name} አሁን ${newState ? "✅ አለ" : "❌ የለም"}`
-  );
+  await ctx.answerCbQuery(`${item?.name} አሁን ${newState ? "✅ አለ" : "❌ የለም"}`);
   try {
-    await ctx.editMessageReplyMarkup(
-      (await manageMenuKeyboard()).reply_markup
-    );
+    await ctx.editMessageReplyMarkup((await manageMenuKeyboard()).reply_markup);
   } catch {}
 });
 
@@ -202,16 +318,13 @@ bot.action("manage_done", async (ctx) => {
 
 bot.action(/^add_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
-  const availableMenu = await getAvailableMenu();
-  const item = availableMenu.find((m) => m.id === itemId);
+  const availableItems = await getAvailableMenuWithPrices();
+  const item = availableItems.find((m) => m.id === itemId);
   if (!item) return ctx.answerCbQuery("ይቅርታ፣ ይህ ምግብ አሁን አይገኝም።");
   addToCart(ctx.from.id, item);
   await ctx.answerCbQuery(`${item.name} ታክሏል ✅`);
   try {
-    await ctx.editMessageText(
-      buildMenuText(ctx.from.id),
-      await menuKeyboard()
-    );
+    await ctx.editMessageText(buildMenuText(ctx.from.id), await menuKeyboard());
   } catch {}
 });
 
@@ -263,9 +376,7 @@ async function showCart(ctx: any) {
 bot.action("checkout", async (ctx) => {
   const userId = ctx.from.id;
   const cart = getCart(userId);
-  if (cart.length === 0) {
-    return ctx.answerCbQuery("የምግብ ዝርዝርዎ ባዶ ነው።");
-  }
+  if (cart.length === 0) return ctx.answerCbQuery("የምግብ ዝርዝርዎ ባዶ ነው።");
   await ctx.answerCbQuery();
   setDraft(userId, {});
   await ctx.reply(
@@ -305,7 +416,13 @@ bot.on("text", async (ctx) => {
   }
 
   if (!draft.customerPhone) {
-    const updatedDraft = { ...draft, customerPhone: ctx.message.text };
+    const phone = ctx.message.text.replace(/\s+/g, "");
+    if (!isValidPhone(phone)) {
+      return ctx.reply(
+        "❌ ስልክ ቁጥሩ ትክክል አይደለም።\nቁጥሩ በ 09 ወይም 07 መጀመር እና ትክክለኛ 10 አሃዝ መሆን አለበት።\nምሳሌ: 0911223344\n\nእባክዎ እንደገና ይሞክሩ:"
+      );
+    }
+    const updatedDraft = { ...draft, customerPhone: phone };
     setDraft(userId, updatedDraft);
     await finalizeOrder(ctx, updatedDraft);
     return;
@@ -348,7 +465,8 @@ async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
   clearCart(userId);
 }
 
-// Handle payment screenshot
+// --- Handle payment screenshot ---
+
 bot.on("photo", async (ctx) => {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
@@ -359,6 +477,16 @@ bot.on("photo", async (ctx) => {
   const orderId = draft.awaitingScreenshotFor;
   const photos = ctx.message.photo;
   const fileId = photos[photos.length - 1].file_id;
+
+  await ctx.reply("⏳ ክፍያዎን እየተረጋገጠ ነው፣ እባክዎ ይጠብቁ...");
+
+  const isValid = await verifyPaymentScreenshot(fileId);
+
+  if (!isValid) {
+    return ctx.reply(
+      "❌ ልክ ያልሆነ ክፍያ !! እባኮ ትክክለኛውን ክፍያ መላኮን ያረጋግጡ እና እንደገና ይሞክሩ።"
+    );
+  }
 
   await pool.query(
     `UPDATE orders SET payment_screenshot_file_id = $1, status = 'payment_submitted' WHERE id = $2`,
