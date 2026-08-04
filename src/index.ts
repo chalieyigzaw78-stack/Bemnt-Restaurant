@@ -25,6 +25,9 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
+// Tracks which item an admin is currently editing the price of
+const adminPriceEdit = new Map<number, string>();
+
 bot.catch((err, ctx) => {
   console.error(`Bot error for update type ${ctx.updateType}:`, err);
 });
@@ -40,9 +43,31 @@ async function getAvailability(): Promise<Record<string, boolean>> {
   return map;
 }
 
+async function getPriceOverrides(): Promise<Record<string, number>> {
+  const result = await pool.query(`SELECT item_id, price FROM menu_price_overrides`);
+  const map: Record<string, number> = {};
+  for (const row of result.rows) {
+    map[row.item_id] = Number(row.price);
+  }
+  return map;
+}
+
+async function setPrice(itemId: string, price: number): Promise<void> {
+  await pool.query(
+    `INSERT INTO menu_price_overrides (item_id, price)
+     VALUES ($1, $2)
+     ON CONFLICT (item_id) DO UPDATE SET price = $2`,
+    [itemId, price]
+  );
+}
+
 async function getAvailableMenu() {
   const avail = await getAvailability();
-  return MENU.filter((item) => avail[item.id] !== false);
+  const prices = await getPriceOverrides();
+  return MENU.filter((item) => avail[item.id] !== false).map((item) => ({
+    ...item,
+    price: prices[item.id] ?? item.price,
+  }));
 }
 
 async function toggleAvailability(itemId: string): Promise<boolean> {
@@ -103,16 +128,17 @@ function cartKeyboard(userId: number) {
 
 async function manageMenuKeyboard() {
   const avail = await getAvailability();
-  const rows = MENU.map((item) => {
+  const prices = await getPriceOverrides();
+  const rows: any[] = [];
+  for (const item of MENU) {
     const isAvailable = avail[item.id] !== false;
     const icon = isAvailable ? "✅" : "❌";
-    return [
-      Markup.button.callback(
-        `${icon} ${item.name} — ${item.price} ብር`,
-        `toggle_${item.id}`
-      ),
-    ];
-  });
+    const price = prices[item.id] ?? item.price;
+    rows.push([
+      Markup.button.callback(`${icon} ${item.name} — ${price} ብር`, `toggle_${item.id}`),
+      Markup.button.callback("💰 ዋጋ ቀይር", `price_${item.id}`),
+    ]);
+  }
   rows.push([Markup.button.callback("✔️ ተጠናቋል", "manage_done")]);
   return Markup.inlineKeyboard(rows);
 }
@@ -196,6 +222,18 @@ bot.action("manage_done", async (ctx) => {
   try {
     await ctx.editMessageText("የምግብ ዝርዝር በተሳካ ሁኔታ ተዘምኗል። ✅");
   } catch {}
+});
+
+// --- Price edit (admin) ---
+
+bot.action(/^price_(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("አልተፈቀደም።");
+  const itemId = ctx.match[1];
+  const item = MENU.find((m) => m.id === itemId);
+  if (!item) return ctx.answerCbQuery("ምግቡ አልተገኘም።");
+  adminPriceEdit.set(ctx.from.id, itemId);
+  await ctx.answerCbQuery();
+  await ctx.reply(`${item.name} አዲስ ዋጋ ያስገቡ (በቁጥር ብቻ):`);
 });
 
 // --- Menu interactions (customers) ---
@@ -289,8 +327,25 @@ bot.action(/^order_type_(delivery|pickup)$/, async (ctx) => {
   }
 });
 
+// --- Text handler (admin price edit + customer checkout flow) ---
+
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
+
+  // Admin price editing takes priority
+  if (isAdmin(userId) && adminPriceEdit.has(userId)) {
+    const itemId = adminPriceEdit.get(userId)!;
+    const raw = ctx.message.text.trim();
+    if (!/^\d+$/.test(raw) || Number(raw) <= 0) {
+      return ctx.reply("እባክዎ ትክክለኛ ዋጋ (አዎንታዊ ቁጥር) ያስገቡ:");
+    }
+    await setPrice(itemId, Number(raw));
+    adminPriceEdit.delete(userId);
+    const item = MENU.find((m) => m.id === itemId);
+    return ctx.reply(`${item?.name} ዋጋ ወደ ${raw} ብር ተቀይሯል ✅`);
+  }
+
+  // Customer checkout flow
   const draft = getDraft(userId);
   if (!draft.orderType) return;
 
@@ -305,7 +360,13 @@ bot.on("text", async (ctx) => {
   }
 
   if (!draft.customerPhone) {
-    const updatedDraft = { ...draft, customerPhone: ctx.message.text };
+    const phone = ctx.message.text.trim();
+    if (!/^(09|07)\d{8}$/.test(phone)) {
+      return ctx.reply(
+        "የስልክ ቁጥሩ ትክክል አይደለም። ቁጥሩ በ09 ወይም 07 መጀመር እና 10 አሃዝ መሆን አለበት። እባክዎ እንደገና ይላኩ:"
+      );
+    }
+    const updatedDraft = { ...draft, customerPhone: phone };
     setDraft(userId, updatedDraft);
     await finalizeOrder(ctx, updatedDraft);
     return;
@@ -348,7 +409,8 @@ async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
   clearCart(userId);
 }
 
-// Handle payment screenshot
+// --- Payment screenshot ---
+
 bot.on("photo", async (ctx) => {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
