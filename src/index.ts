@@ -57,8 +57,6 @@ async function setMarquee(message: string, hours: number): Promise<void> {
 }
 
 function animateMarquee(text: string): string {
-  // Telegram doesn't support HTML marquee, so we simulate scrolling
-  // by padding with spaces to create a moving effect visually
   return `📢 〈 ${text} 〉`;
 }
 
@@ -217,9 +215,6 @@ function scheduleDailyReset() {
 
   setTimeout(async () => {
     try {
-      // Archive yesterday's orders by marking them — we don't delete,
-      // just flag so reports remain accurate. In-memory carts/drafts
-      // reset naturally when users interact after the bot restarts.
       await pool.query(
         `UPDATE orders SET status = 'archived'
          WHERE status IN ('pending_payment', 'payment_submitted')
@@ -240,13 +235,12 @@ function scheduleDailyReset() {
       console.error("Daily reset error:", err);
     }
 
-    // Schedule next day
     scheduleDailyReset();
   }, msUntil(6, 0));
 }
 
 // ─────────────────────────────────────────────
-// NIGHTLY PAYMENT REPORT (runs every night at 9:00 PM)
+// NIGHTLY REPORT (runs every night at 9:00 PM)
 // ─────────────────────────────────────────────
 
 function scheduleNightlyReport() {
@@ -302,12 +296,18 @@ async function sendNightlyReport() {
     return;
   }
 
-  const totalRevenue = orders.reduce((sum: number, o: any) => sum + Number(o.total_amount), 0);
+  const totalRevenue = orders.reduce(
+    (sum: number, o: any) => sum + Number(o.total_amount),
+    0
+  );
   const confirmed = orders.filter((o: any) => o.status === "confirmed").length;
-  const submitted = orders.filter((o: any) => o.status === "payment_submitted").length;
-  const pending = orders.filter((o: any) => o.status === "pending_payment").length;
+  const submitted = orders.filter(
+    (o: any) => o.status === "payment_submitted"
+  ).length;
+  const pending = orders.filter(
+    (o: any) => o.status === "pending_payment"
+  ).length;
 
-  // Build a pretty table using monospace formatting
   const divider = `┼${"─".repeat(4)}┼${"─".repeat(14)}┼${"─".repeat(12)}┼${"─".repeat(10)}┼${"─".repeat(10)}┼`;
   const header  = `│ #  │ ደንበኛ         │ ስልክ        │ አይነት    │ ብር       │`;
   const top     = `┌${"─".repeat(4)}┬${"─".repeat(14)}┬${"─".repeat(12)}┬${"─".repeat(10)}┬${"─".repeat(10)}┐`;
@@ -345,7 +345,9 @@ async function sendNightlyReport() {
 
   for (const adminId of ADMIN_IDS) {
     try {
-      await bot.telegram.sendMessage(adminId, report, { parse_mode: "Markdown" });
+      await bot.telegram.sendMessage(adminId, report, {
+        parse_mode: "Markdown",
+      });
     } catch (err) {
       console.error(`Failed to send nightly report to admin ${adminId}:`, err);
     }
@@ -377,42 +379,23 @@ bot.command("menu", async (ctx) => {
 
 bot.command("manage", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
-  ctx.reply("የምግብ ዝርዝር ያስተዳድሩ — ለመቀየር ይጫኑ:", await manageMenuKeyboard());
-});
-
-// /setmarquee <hours> <message>
-// Example: /setmarquee 3 ዛሬ ልዩ ቅናሽ አለ! 50% ዲስካውንት!
-bot.command("setmarquee", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return;
-  const parts = ctx.message.text.split(" ");
-  if (parts.length < 3) {
-    return ctx.reply(
-      "አጠቃቀም: /setmarquee <ሰዓት> <መልዕክት>\nምሳሌ: /setmarquee 3 ዛሬ ልዩ ቅናሽ አለ!"
-    );
-  }
-  const hours = parseFloat(parts[1]);
-  if (isNaN(hours) || hours <= 0) {
-    return ctx.reply("እባክዎ ትክክለኛ ሰዓት ያስገቡ። ምሳሌ: /setmarquee 2 መልዕክት");
-  }
-  const message = parts.slice(2).join(" ");
-  await setMarquee(message, hours);
   ctx.reply(
-    `✅ ማርኬ ተቀጥሏል!\n\n📢 "${message}"\n⏱ ለ ${hours} ሰዓት ይታያል።`
+    "የምግብ ዝርዝር ያስተዳድሩ — ለመቀየር ይጫኑ:",
+    await manageMenuKeyboard()
   );
-});
-
-bot.command("clearmarquee", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return;
-  await pool.query(`UPDATE marquee SET message = '', expires_at = NULL WHERE id = 1`);
-  ctx.reply("✅ ማርኬ ተሰርዟል።");
 });
 
 bot.command("confirm", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   const orderId = parseInt(ctx.message.text.split(" ")[1], 10);
   if (!orderId) return ctx.reply("አጠቃቀም: /confirm <order_id>");
-  await pool.query(`UPDATE orders SET status = 'confirmed' WHERE id = $1`, [orderId]);
-  const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
+  await pool.query(`UPDATE orders SET status = 'confirmed' WHERE id = $1`, [
+    orderId,
+  ]);
+  const orderResult = await pool.query(
+    `SELECT * FROM orders WHERE id = $1`,
+    [orderId]
+  );
   const order = orderResult.rows[0];
   if (order) {
     await bot.telegram.sendMessage(
@@ -420,7 +403,54 @@ bot.command("confirm", async (ctx) => {
       `ትዕዛዝ #${orderId} ተረጋግጧል! በምነት ሬስቶራንት እያዘጋጀ ነው። 🍽`
     );
   }
-  ctx.reply(`ትዕዛዝ #${orderId} ተረጋግጧል።`);
+  ctx.reply(
+    `✅ ትዕዛዝ #${orderId} ተረጋግጧል።\n\n💬 ለደንበኛው ለመልስ: /reply ${orderId} <መልዕክት>`
+  );
+});
+
+bot.command("reply", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+
+  const parts = ctx.message.text.split(" ");
+  if (parts.length < 3) {
+    return ctx.reply(
+      "አጠቃቀም: /reply <order_id> <መልዕክት>\nምሳሌ: /reply 42 ትዕዛዝዎ እየተዘጋጀ ነው!"
+    );
+  }
+
+  const orderId = parseInt(parts[1], 10);
+  if (isNaN(orderId)) {
+    return ctx.reply("ትክክለኛ የትዕዛዝ ቁጥር ያስገቡ። ምሳሌ: /reply 42 መልዕክት");
+  }
+
+  const message = parts.slice(2).join(" ");
+
+  const orderResult = await pool.query(
+    `SELECT customer_telegram_id, customer_name FROM orders WHERE id = $1`,
+    [orderId]
+  );
+
+  if (orderResult.rows.length === 0) {
+    return ctx.reply(`ትዕዛዝ #${orderId} አልተገኘም።`);
+  }
+
+  const order = orderResult.rows[0];
+
+  try {
+    await bot.telegram.sendMessage(
+      order.customer_telegram_id,
+      `📨 *በምነት ሬስቶራንት:*\n\n${message}`,
+      { parse_mode: "Markdown" }
+    );
+    ctx.reply(
+      `✅ መልዕክት ለ ${order.customer_name} (ትዕዛዝ #${orderId}) ተልኳል።`
+    );
+  } catch (err) {
+    console.error("Failed to send reply to customer:", err);
+    ctx.reply(
+      "❌ መልዕክት መላክ አልተቻለም። ደንበኛው ቦቱን አቁሞ ሊሆን ይችላል።"
+    );
+  }
 });
 
 bot.command("orders", async (ctx) => {
@@ -439,10 +469,38 @@ bot.command("orders", async (ctx) => {
   ctx.reply(lines.join("\n"));
 });
 
-// Send nightly report on demand
 bot.command("report", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   await sendNightlyReport();
+});
+
+bot.command("setmarquee", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const parts = ctx.message.text.split(" ");
+  if (parts.length < 3) {
+    return ctx.reply(
+      "አጠቃቀም: /setmarquee <ሰዓት> <መልዕክት>\nምሳሌ: /setmarquee 3 ዛሬ ልዩ ቅናሽ አለ!"
+    );
+  }
+  const hours = parseFloat(parts[1]);
+  if (isNaN(hours) || hours <= 0) {
+    return ctx.reply(
+      "እባክዎ ትክክለኛ ሰዓት ያስገቡ። ምሳሌ: /setmarquee 2 መልዕክት"
+    );
+  }
+  const message = parts.slice(2).join(" ");
+  await setMarquee(message, hours);
+  ctx.reply(
+    `✅ ማርኬ ተቀጥሏል!\n\n📢 "${message}"\n⏱ ለ ${hours} ሰዓት ይታያል።`
+  );
+});
+
+bot.command("clearmarquee", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  await pool.query(
+    `UPDATE marquee SET message = '', expires_at = NULL WHERE id = 1`
+  );
+  ctx.reply("✅ ማርኬ ተሰርዟል።");
 });
 
 // ─────────────────────────────────────────────
@@ -691,7 +749,7 @@ bot.on("photo", async (ctx) => {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
   if (!draft.awaitingScreenshotFor) {
-    return ctx.reply("መጀመርያ ምግብ ይዘዙ። ለማዘዝ /menu ይጫኑ።");
+    return ctx.reply("ፎቶ አልጠበቅሁም። ለማዘዝ /menu ይጫኑ።");
   }
 
   const orderId = draft.awaitingScreenshotFor;
@@ -732,7 +790,8 @@ bot.on("photo", async (ctx) => {
   const adminText =
     `🆕 አዲስ ትዕዛዝ #${order.id} — ክፍያ ተልኳል\n\n` +
     `👤 ${order.customer_name}\n📞 ${order.customer_phone}\n${orderTypeLine}\n\n` +
-    `${itemLines}\n\nድምር: ${order.total_amount} ብር`;
+    `${itemLines}\n\nድምር: ${order.total_amount} ብር\n\n` +
+    `💬 ለደንበኛው ለመልስ: /reply ${order.id} <መልዕክት>`;
 
   for (const adminId of ADMIN_IDS) {
     try {
