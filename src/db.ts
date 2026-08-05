@@ -46,5 +46,13 @@ export async function initDb() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS marquee (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      message TEXT NOT NULL DEFAULT '',
+      expires_at TIMESTAMP
+    );
+  `);
+
   console.log("Database initialized.");
 }
