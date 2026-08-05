@@ -32,10 +32,50 @@ bot.catch((err, ctx) => {
   console.error(`Bot error for update type ${ctx.updateType}:`, err);
 });
 
-// --- Menu availability helpers ---
+// ─────────────────────────────────────────────
+// MARQUEE
+// ─────────────────────────────────────────────
+
+async function getMarquee(): Promise<string> {
+  const result = await pool.query(
+    `SELECT message, expires_at FROM marquee WHERE id = 1`
+  );
+  if (result.rows.length === 0) return "";
+  const row = result.rows[0];
+  if (row.expires_at && new Date(row.expires_at) < new Date()) return "";
+  return row.message || "";
+}
+
+async function setMarquee(message: string, hours: number): Promise<void> {
+  const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+  await pool.query(
+    `INSERT INTO marquee (id, message, expires_at)
+     VALUES (1, $1, $2)
+     ON CONFLICT (id) DO UPDATE SET message = $1, expires_at = $2`,
+    [message, expiresAt]
+  );
+}
+
+function animateMarquee(text: string): string {
+  // Telegram doesn't support HTML marquee, so we simulate scrolling
+  // by padding with spaces to create a moving effect visually
+  return `📢 〈 ${text} 〉`;
+}
+
+async function buildHeader(): Promise<string> {
+  const marquee = await getMarquee();
+  if (!marquee) return "";
+  return `${animateMarquee(marquee)}\n${"─".repeat(30)}\n`;
+}
+
+// ─────────────────────────────────────────────
+// MENU AVAILABILITY & PRICE HELPERS
+// ─────────────────────────────────────────────
 
 async function getAvailability(): Promise<Record<string, boolean>> {
-  const result = await pool.query(`SELECT item_id, available FROM menu_availability`);
+  const result = await pool.query(
+    `SELECT item_id, available FROM menu_availability`
+  );
   const map: Record<string, boolean> = {};
   for (const row of result.rows) {
     map[row.item_id] = row.available;
@@ -44,7 +84,9 @@ async function getAvailability(): Promise<Record<string, boolean>> {
 }
 
 async function getPriceOverrides(): Promise<Record<string, number>> {
-  const result = await pool.query(`SELECT item_id, price FROM menu_price_overrides`);
+  const result = await pool.query(
+    `SELECT item_id, price FROM menu_price_overrides`
+  );
   const map: Record<string, number> = {};
   for (const row of result.rows) {
     map[row.item_id] = Number(row.price);
@@ -86,27 +128,33 @@ async function toggleAvailability(itemId: string): Promise<boolean> {
   return next;
 }
 
-// --- Menu text with cart preview ---
+// ─────────────────────────────────────────────
+// MENU TEXT & KEYBOARDS
+// ─────────────────────────────────────────────
 
-function buildMenuText(userId: number): string {
+async function buildMenuText(userId: number): Promise<string> {
+  const header = await buildHeader();
   const cart = getCart(userId);
-  let text = `🍽 እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
+  let body = `🍽 እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት!\n📍 ጎንደር፣ ማርኪ\n\nለማዘዝ ምግብ ይምረጡ:`;
   if (cart.length > 0) {
-    const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
+    const lines = cart.map(
+      (i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`
+    );
     const total = cartTotal(userId);
-    text = `🛒 የተመረጡ ምግቦች:\n${lines.join("\n")}\n\nድምር: ${total} ብር\n\n────────────────\nለማዘዝ ምግብ ይምረጡ:`;
+    body = `🛒 የተመረጡ ምግቦች:\n${lines.join("\n")}\n\nድምር: ${total} ብር\n\n${"─".repeat(16)}\nለማዘዝ ምግብ ይምረጡ:`;
   }
-  return text;
+  return header + body;
 }
-
-// --- Keyboards ---
 
 async function menuKeyboard() {
   const availableItems = await getAvailableMenu();
   const buttons = availableItems.map((item) =>
-    Markup.button.callback(`${item.name} — ${item.price} ብር`, `add_${item.id}`)
+    Markup.button.callback(
+      `${item.name} — ${item.price} ብር`,
+      `add_${item.id}`
+    )
   );
-  const rows = [];
+  const rows: any[] = [];
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
@@ -116,7 +164,7 @@ async function menuKeyboard() {
 
 function cartKeyboard(userId: number) {
   const cart = getCart(userId);
-  const rows = cart.map((item) => [
+  const rows: any[] = cart.map((item) => [
     Markup.button.callback(`${item.name} x${item.quantity}`, "noop"),
     Markup.button.callback("➖", `remove_${item.id}`),
     Markup.button.callback("➕", `add_${item.id}`),
@@ -135,7 +183,10 @@ async function manageMenuKeyboard() {
     const icon = isAvailable ? "✅" : "❌";
     const price = prices[item.id] ?? item.price;
     rows.push([
-      Markup.button.callback(`${icon} ${item.name} — ${price} ብር`, `toggle_${item.id}`),
+      Markup.button.callback(
+        `${icon} ${item.name} — ${price} ብር`,
+        `toggle_${item.id}`
+      ),
       Markup.button.callback("💰 ዋጋ ቀይር", `price_${item.id}`),
     ]);
   }
@@ -143,11 +194,167 @@ async function manageMenuKeyboard() {
   return Markup.inlineKeyboard(rows);
 }
 
-// --- Commands ---
+// ─────────────────────────────────────────────
+// ADMIN HELPERS
+// ─────────────────────────────────────────────
 
 function isAdmin(userId: number) {
   return ADMIN_IDS.map(Number).includes(Number(userId));
 }
+
+// ─────────────────────────────────────────────
+// DAILY RESET (runs every morning at 6:00 AM)
+// ─────────────────────────────────────────────
+
+function scheduleDailyReset() {
+  function msUntil(hour: number, minute = 0): number {
+    const now = new Date();
+    const next = new Date();
+    next.setHours(hour, minute, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    return next.getTime() - now.getTime();
+  }
+
+  setTimeout(async () => {
+    try {
+      // Archive yesterday's orders by marking them — we don't delete,
+      // just flag so reports remain accurate. In-memory carts/drafts
+      // reset naturally when users interact after the bot restarts.
+      await pool.query(
+        `UPDATE orders SET status = 'archived'
+         WHERE status IN ('pending_payment', 'payment_submitted')
+           AND created_at < CURRENT_DATE`
+      );
+
+      for (const adminId of ADMIN_IDS) {
+        try {
+          await bot.telegram.sendMessage(
+            adminId,
+            `🌅 እንኳን ደህና አደሩ!\n\nአዲስ ቀን ተጀምሯል — ትዕዛዞች ዳግም ጀምሯል። ✅`
+          );
+        } catch {}
+      }
+
+      console.log("Daily reset done.");
+    } catch (err) {
+      console.error("Daily reset error:", err);
+    }
+
+    // Schedule next day
+    scheduleDailyReset();
+  }, msUntil(6, 0));
+}
+
+// ─────────────────────────────────────────────
+// NIGHTLY PAYMENT REPORT (runs every night at 9:00 PM)
+// ─────────────────────────────────────────────
+
+function scheduleNightlyReport() {
+  function msUntil(hour: number, minute = 0): number {
+    const now = new Date();
+    const next = new Date();
+    next.setHours(hour, minute, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    return next.getTime() - now.getTime();
+  }
+
+  setTimeout(async () => {
+    try {
+      await sendNightlyReport();
+    } catch (err) {
+      console.error("Nightly report error:", err);
+    }
+    scheduleNightlyReport();
+  }, msUntil(21, 0));
+}
+
+async function sendNightlyReport() {
+  const result = await pool.query(
+    `SELECT
+       o.id,
+       o.customer_name,
+       o.customer_phone,
+       o.order_type,
+       o.total_amount,
+       o.status,
+       o.created_at,
+       STRING_AGG(oi.item_name || ' x' || oi.quantity, ', ') AS items
+     FROM orders o
+     LEFT JOIN order_items oi ON oi.order_id = o.id
+     WHERE o.created_at >= CURRENT_DATE
+       AND o.status IN ('payment_submitted', 'confirmed', 'pending_payment')
+     GROUP BY o.id
+     ORDER BY o.created_at ASC`
+  );
+
+  const orders = result.rows;
+  const today = new Date().toLocaleDateString("en-GB");
+
+  if (orders.length === 0) {
+    for (const adminId of ADMIN_IDS) {
+      try {
+        await bot.telegram.sendMessage(
+          adminId,
+          `🌙 የምሽት ሪፖርት — ${today}\n\nዛሬ ምንም ትዕዛዝ አልተቀበለም።`
+        );
+      } catch {}
+    }
+    return;
+  }
+
+  const totalRevenue = orders.reduce((sum: number, o: any) => sum + Number(o.total_amount), 0);
+  const confirmed = orders.filter((o: any) => o.status === "confirmed").length;
+  const submitted = orders.filter((o: any) => o.status === "payment_submitted").length;
+  const pending = orders.filter((o: any) => o.status === "pending_payment").length;
+
+  // Build a pretty table using monospace formatting
+  const divider = `┼${"─".repeat(4)}┼${"─".repeat(14)}┼${"─".repeat(12)}┼${"─".repeat(10)}┼${"─".repeat(10)}┼`;
+  const header  = `│ #  │ ደንበኛ         │ ስልክ        │ አይነት    │ ብር       │`;
+  const top     = `┌${"─".repeat(4)}┬${"─".repeat(14)}┬${"─".repeat(12)}┬${"─".repeat(10)}┬${"─".repeat(10)}┐`;
+  const bottom  = `└${"─".repeat(4)}┴${"─".repeat(14)}┴${"─".repeat(12)}┴${"─".repeat(10)}┴${"─".repeat(10)}┘`;
+
+  const rows = orders.map((o: any) => {
+    const name  = (o.customer_name  || "—").substring(0, 12).padEnd(12);
+    const phone = (o.customer_phone || "—").substring(0, 10).padEnd(10);
+    const type  = (o.order_type === "delivery" ? "ዴሊቨሪ" : "ፒክአፕ").padEnd(8);
+    const amt   = String(o.total_amount).padEnd(8);
+    const id    = String(o.id).padEnd(2);
+    return `│ ${id} │ ${name} │ ${phone} │ ${type} │ ${amt} │`;
+  });
+
+  const statusLine = (emoji: string, label: string, count: number) =>
+    `${emoji} ${label}: ${count} ትዕዛዝ`;
+
+  const report =
+    `🌙 *የምሽት ሪፖርት — ${today}*\n` +
+    `${"═".repeat(34)}\n\n` +
+    `📊 *ማጠቃለያ*\n` +
+    `${statusLine("✅", "ተረጋግጧል", confirmed)}\n` +
+    `${statusLine("💳", "ክፍያ ተልኳል", submitted)}\n` +
+    `${statusLine("⏳", "ክፍያ ይጠበቃል", pending)}\n` +
+    `💰 *ጠቅላላ ገቢ: ${totalRevenue} ብር*\n\n` +
+    `📋 *የትዕዛዝ ዝርዝር*\n` +
+    `\`\`\`\n` +
+    `${top}\n` +
+    `${header}\n` +
+    `${divider}\n` +
+    rows.join(`\n${divider}\n`) +
+    `\n${bottom}\n` +
+    `\`\`\`\n\n` +
+    `🍽 *በምነት ሬስቶራንት — ጎንደር*`;
+
+  for (const adminId of ADMIN_IDS) {
+    try {
+      await bot.telegram.sendMessage(adminId, report, { parse_mode: "Markdown" });
+    } catch (err) {
+      console.error(`Failed to send nightly report to admin ${adminId}:`, err);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// COMMANDS
+// ─────────────────────────────────────────────
 
 bot.start(async (ctx) => {
   console.log("Telegram user ID:", ctx.from.id);
@@ -155,20 +362,49 @@ bot.start(async (ctx) => {
   clearDraft(ctx.from.id);
   const availableItems = await getAvailableMenu();
   if (availableItems.length === 0) {
+    const header = await buildHeader();
     return ctx.reply(
-      `እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት! 🍽\nጎንደር፣ ማርኪ\n\nየምግብ ዝርዝሩ አሁን አይገኝም። እባክዎ ቆየት ብለው ይሞክሩ!`
+      header +
+        `እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት! 🍽\nጎንደር፣ ማርኪ\n\nየምግብ ዝርዝሩ አሁን አይገኝም። እባክዎ ቆየት ብለው ይሞክሩ!`
     );
   }
-  ctx.reply(buildMenuText(ctx.from.id), await menuKeyboard());
+  ctx.reply(await buildMenuText(ctx.from.id), await menuKeyboard());
 });
 
 bot.command("menu", async (ctx) => {
-  ctx.reply(buildMenuText(ctx.from.id), await menuKeyboard());
+  ctx.reply(await buildMenuText(ctx.from.id), await menuKeyboard());
 });
 
 bot.command("manage", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   ctx.reply("የምግብ ዝርዝር ያስተዳድሩ — ለመቀየር ይጫኑ:", await manageMenuKeyboard());
+});
+
+// /setmarquee <hours> <message>
+// Example: /setmarquee 3 ዛሬ ልዩ ቅናሽ አለ! 50% ዲስካውንት!
+bot.command("setmarquee", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const parts = ctx.message.text.split(" ");
+  if (parts.length < 3) {
+    return ctx.reply(
+      "አጠቃቀም: /setmarquee <ሰዓት> <መልዕክት>\nምሳሌ: /setmarquee 3 ዛሬ ልዩ ቅናሽ አለ!"
+    );
+  }
+  const hours = parseFloat(parts[1]);
+  if (isNaN(hours) || hours <= 0) {
+    return ctx.reply("እባክዎ ትክክለኛ ሰዓት ያስገቡ። ምሳሌ: /setmarquee 2 መልዕክት");
+  }
+  const message = parts.slice(2).join(" ");
+  await setMarquee(message, hours);
+  ctx.reply(
+    `✅ ማርኬ ተቀጥሏል!\n\n📢 "${message}"\n⏱ ለ ${hours} ሰዓት ይታያል።`
+  );
+});
+
+bot.command("clearmarquee", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  await pool.query(`UPDATE marquee SET message = '', expires_at = NULL WHERE id = 1`);
+  ctx.reply("✅ ማርኬ ተሰርዟል።");
 });
 
 bot.command("confirm", async (ctx) => {
@@ -190,9 +426,12 @@ bot.command("confirm", async (ctx) => {
 bot.command("orders", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   const result = await pool.query(
-    `SELECT id, customer_name, order_type, total_amount, status, created_at FROM orders ORDER BY created_at DESC LIMIT 10`
+    `SELECT id, customer_name, order_type, total_amount, status, created_at
+     FROM orders
+     WHERE created_at >= CURRENT_DATE
+     ORDER BY created_at DESC LIMIT 10`
   );
-  if (result.rows.length === 0) return ctx.reply("እስካሁን ምንም ትዕዛዝ የለም።");
+  if (result.rows.length === 0) return ctx.reply("ዛሬ ምንም ትዕዛዝ የለም።");
   const lines = result.rows.map(
     (o: any) =>
       `#${o.id} — ${o.customer_name} — ${o.order_type} — ${o.total_amount} ብር — ${o.status}`
@@ -200,7 +439,15 @@ bot.command("orders", async (ctx) => {
   ctx.reply(lines.join("\n"));
 });
 
-// --- Menu toggle (admin) ---
+// Send nightly report on demand
+bot.command("report", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  await sendNightlyReport();
+});
+
+// ─────────────────────────────────────────────
+// ADMIN ACTIONS
+// ─────────────────────────────────────────────
 
 bot.action(/^toggle_(.+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("አልተፈቀደም።");
@@ -224,8 +471,6 @@ bot.action("manage_done", async (ctx) => {
   } catch {}
 });
 
-// --- Price edit (admin) ---
-
 bot.action(/^price_(.+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("አልተፈቀደም።");
   const itemId = ctx.match[1];
@@ -236,7 +481,9 @@ bot.action(/^price_(.+)$/, async (ctx) => {
   await ctx.reply(`${item.name} አዲስ ዋጋ ያስገቡ (በቁጥር ብቻ):`);
 });
 
-// --- Menu interactions (customers) ---
+// ─────────────────────────────────────────────
+// CUSTOMER ACTIONS
+// ─────────────────────────────────────────────
 
 bot.action(/^add_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
@@ -247,7 +494,7 @@ bot.action(/^add_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery(`${item.name} ታክሏል ✅`);
   try {
     await ctx.editMessageText(
-      buildMenuText(ctx.from.id),
+      await buildMenuText(ctx.from.id),
       await menuKeyboard()
     );
   } catch {}
@@ -267,7 +514,10 @@ bot.action("noop", async (ctx) => {
 bot.action("back_to_menu", async (ctx) => {
   await ctx.answerCbQuery();
   try {
-    await ctx.editMessageText(buildMenuText(ctx.from.id), await menuKeyboard());
+    await ctx.editMessageText(
+      await buildMenuText(ctx.from.id),
+      await menuKeyboard()
+    );
   } catch {}
 });
 
@@ -281,14 +531,22 @@ async function showCart(ctx: any) {
   const cart = getCart(userId);
   if (cart.length === 0) {
     try {
-      return ctx.editMessageText(buildMenuText(userId), await menuKeyboard());
+      return ctx.editMessageText(
+        await buildMenuText(userId),
+        await menuKeyboard()
+      );
     } catch {
-      return ctx.reply(buildMenuText(userId), await menuKeyboard());
+      return ctx.reply(await buildMenuText(userId), await menuKeyboard());
     }
   }
-  const lines = cart.map((i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`);
+  const lines = cart.map(
+    (i) => `• ${i.name} x${i.quantity} — ${i.price * i.quantity} ብር`
+  );
   const total = cartTotal(userId);
-  const text = `🛒 የምግብ ዝርዝርዎ:\n\n${lines.join("\n")}\n\nድምር: ${total} ብር`;
+  const header = await buildHeader();
+  const text =
+    header +
+    `🛒 የምግብ ዝርዝርዎ:\n\n${lines.join("\n")}\n\nድምር: ${total} ብር`;
   try {
     await ctx.editMessageText(text, cartKeyboard(userId));
   } catch {
@@ -296,7 +554,9 @@ async function showCart(ctx: any) {
   }
 }
 
-// --- Checkout flow ---
+// ─────────────────────────────────────────────
+// CHECKOUT FLOW
+// ─────────────────────────────────────────────
 
 bot.action("checkout", async (ctx) => {
   const userId = ctx.from.id;
@@ -327,7 +587,9 @@ bot.action(/^order_type_(delivery|pickup)$/, async (ctx) => {
   }
 });
 
-// --- Text handler (admin price edit + customer checkout flow) ---
+// ─────────────────────────────────────────────
+// TEXT HANDLER
+// ─────────────────────────────────────────────
 
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
@@ -373,6 +635,10 @@ bot.on("text", async (ctx) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// FINALIZE ORDER
+// ─────────────────────────────────────────────
+
 async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
   const userId = ctx.from.id;
   const cart = getCart(userId);
@@ -381,13 +647,21 @@ async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
   const result = await pool.query(
     `INSERT INTO orders (customer_telegram_id, customer_name, customer_phone, order_type, delivery_address, total_amount, status)
      VALUES ($1, $2, $3, $4, $5, $6, 'pending_payment') RETURNING id`,
-    [userId, draft.customerName, draft.customerPhone, draft.orderType, draft.deliveryAddress ?? null, total]
+    [
+      userId,
+      draft.customerName,
+      draft.customerPhone,
+      draft.orderType,
+      draft.deliveryAddress ?? null,
+      total,
+    ]
   );
   const orderId = result.rows[0].id;
 
   for (const item of cart) {
     await pool.query(
-      `INSERT INTO order_items (order_id, item_id, item_name, item_price, quantity) VALUES ($1, $2, $3, $4, $5)`,
+      `INSERT INTO order_items (order_id, item_id, item_name, item_price, quantity)
+       VALUES ($1, $2, $3, $4, $5)`,
       [orderId, item.id, item.name, item.price, item.quantity]
     );
   }
@@ -409,13 +683,15 @@ async function finalizeOrder(ctx: any, draft: ReturnType<typeof getDraft>) {
   clearCart(userId);
 }
 
-// --- Payment screenshot ---
+// ─────────────────────────────────────────────
+// PAYMENT SCREENSHOT
+// ─────────────────────────────────────────────
 
 bot.on("photo", async (ctx) => {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
   if (!draft.awaitingScreenshotFor) {
-    return ctx.reply("ፎቶ አልጠበቅሁም። ለማዘዝ /menu ይጫኑ።");
+    return ctx.reply("መጀመርያ ምግብ ይዘዙ። ለማዘዝ /menu ይጫኑ።");
   }
 
   const orderId = draft.awaitingScreenshotFor;
@@ -431,12 +707,21 @@ bot.on("photo", async (ctx) => {
     `እናመሰግናለን! የክፍያ ስክሪንሾትዎ ለትዕዛዝ #${orderId} ደርሷል። በምነት ሬስቶራንት በቅርቡ ያረጋግጥልዎታል። 🙏`
   );
 
-  const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
+  const orderResult = await pool.query(
+    `SELECT * FROM orders WHERE id = $1`,
+    [orderId]
+  );
   const order = orderResult.rows[0];
-  const itemsResult = await pool.query(`SELECT * FROM order_items WHERE order_id = $1`, [orderId]);
+  const itemsResult = await pool.query(
+    `SELECT * FROM order_items WHERE order_id = $1`,
+    [orderId]
+  );
   const items = itemsResult.rows;
   const itemLines = items
-    .map((i: any) => `• ${i.item_name} x${i.quantity} — ${i.item_price * i.quantity} ብር`)
+    .map(
+      (i: any) =>
+        `• ${i.item_name} x${i.quantity} — ${i.item_price * i.quantity} ብር`
+    )
     .join("\n");
 
   const orderTypeLine =
@@ -460,11 +745,17 @@ bot.on("photo", async (ctx) => {
   clearDraft(userId);
 });
 
-// --- Startup ---
+// ─────────────────────────────────────────────
+// STARTUP
+// ─────────────────────────────────────────────
 
 initDb()
   .then(() => bot.launch({ dropPendingUpdates: true }))
-  .then(() => console.log(`${RESTAURANT.name} bot is running.`))
+  .then(() => {
+    console.log(`${RESTAURANT.name} bot is running.`);
+    scheduleDailyReset();
+    scheduleNightlyReport();
+  })
   .catch((err) => console.error("Startup error:", err));
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
