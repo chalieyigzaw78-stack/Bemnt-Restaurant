@@ -28,6 +28,9 @@ const bot = new Telegraf(BOT_TOKEN);
 // Tracks which item an admin is currently editing the price of
 const adminPriceEdit = new Map<number, string>();
 
+// Tracks which users have already received the reminder message
+const remindedUsers = new Set<number>();
+
 bot.catch((err, ctx) => {
   console.error(`Bot error for update type ${ctx.updateType}:`, err);
 });
@@ -144,7 +147,7 @@ async function buildMenuText(userId: number): Promise<string> {
   return header + body;
 }
 
-async function menuKeyboard() {
+async function menuKeyboard(userId: number) {
   const availableItems = await getAvailableMenu();
   const buttons = availableItems.map((item) =>
     Markup.button.callback(
@@ -156,6 +159,19 @@ async function menuKeyboard() {
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
+
+  const cart = getCart(userId);
+  if (cart.length > 0) {
+    const total = cartTotal(userId);
+    // Big clear checkout button showing total
+    rows.push([
+      Markup.button.callback(
+        `✅ ትዕዛዝ ጨርስ — ${total} ብር`,
+        "checkout"
+      ),
+    ]);
+  }
+
   rows.push([Markup.button.callback("🛒 የምግብ ዝርዝር ይመልከቱ", "view_cart")]);
   return Markup.inlineKeyboard(rows);
 }
@@ -167,7 +183,7 @@ function cartKeyboard(userId: number) {
     Markup.button.callback("➖", `remove_${item.id}`),
     Markup.button.callback("➕", `add_${item.id}`),
   ]);
-  rows.push([Markup.button.callback("✅ ትዕዛዝ ይፈጽሙ", "checkout")]);
+  rows.push([Markup.button.callback("✅ ትዕዛዝ ጨርስ", "checkout")]);
   rows.push([Markup.button.callback("🍽 ወደ ምግብ ዝርዝር ተመለስ", "back_to_menu")]);
   return Markup.inlineKeyboard(rows);
 }
@@ -220,6 +236,9 @@ function scheduleDailyReset() {
          WHERE status IN ('pending_payment', 'payment_submitted')
            AND created_at < CURRENT_DATE`
       );
+
+      // Clear reminded users on daily reset
+      remindedUsers.clear();
 
       for (const adminId of ADMIN_IDS) {
         try {
@@ -362,6 +381,7 @@ bot.start(async (ctx) => {
   console.log("Telegram user ID:", ctx.from.id);
   clearCart(ctx.from.id);
   clearDraft(ctx.from.id);
+  remindedUsers.delete(ctx.from.id);
   const availableItems = await getAvailableMenu();
   if (availableItems.length === 0) {
     const header = await buildHeader();
@@ -370,11 +390,11 @@ bot.start(async (ctx) => {
         `እንኳን ደህና መጡ ወደ በምነት ሬስቶራንት! 🍽\nጎንደር፣ ማርኪ\n\nየምግብ ዝርዝሩ አሁን አይገኝም። እባክዎ ቆየት ብለው ይሞክሩ!`
     );
   }
-  ctx.reply(await buildMenuText(ctx.from.id), await menuKeyboard());
+  ctx.reply(await buildMenuText(ctx.from.id), await menuKeyboard(ctx.from.id));
 });
 
 bot.command("menu", async (ctx) => {
-  ctx.reply(await buildMenuText(ctx.from.id), await menuKeyboard());
+  ctx.reply(await buildMenuText(ctx.from.id), await menuKeyboard(ctx.from.id));
 });
 
 bot.command("manage", async (ctx) => {
@@ -544,16 +564,26 @@ bot.action(/^price_(.+)$/, async (ctx) => {
 // ─────────────────────────────────────────────
 
 bot.action(/^add_(.+)$/, async (ctx) => {
+  const userId = ctx.from.id;
   const itemId = ctx.match[1];
   const availableMenu = await getAvailableMenu();
   const item = availableMenu.find((m) => m.id === itemId);
   if (!item) return ctx.answerCbQuery("ይቅርታ፣ ይህ ምግብ አሁን አይገኝም።");
-  addToCart(ctx.from.id, item);
+  addToCart(userId, item);
   await ctx.answerCbQuery(`${item.name} ታክሏል ✅`);
+
+  // Send one time reminder the first time they add an item
+  if (!remindedUsers.has(userId)) {
+    remindedUsers.add(userId);
+    await ctx.reply(
+      `👆 ምግብዎን ከመረጡ በኋላ ✅ ትዕዛዝ ጨርስ የሚለውን ይጫኑ!`
+    );
+  }
+
   try {
     await ctx.editMessageText(
-      await buildMenuText(ctx.from.id),
-      await menuKeyboard()
+      await buildMenuText(userId),
+      await menuKeyboard(userId)
     );
   } catch {}
 });
@@ -574,7 +604,7 @@ bot.action("back_to_menu", async (ctx) => {
   try {
     await ctx.editMessageText(
       await buildMenuText(ctx.from.id),
-      await menuKeyboard()
+      await menuKeyboard(ctx.from.id)
     );
   } catch {}
 });
@@ -591,10 +621,10 @@ async function showCart(ctx: any) {
     try {
       return ctx.editMessageText(
         await buildMenuText(userId),
-        await menuKeyboard()
+        await menuKeyboard(userId)
       );
     } catch {
-      return ctx.reply(await buildMenuText(userId), await menuKeyboard());
+      return ctx.reply(await buildMenuText(userId), await menuKeyboard(userId));
     }
   }
   const lines = cart.map(
@@ -802,6 +832,7 @@ bot.on("photo", async (ctx) => {
   }
 
   clearDraft(userId);
+  remindedUsers.delete(userId);
 });
 
 // ─────────────────────────────────────────────
