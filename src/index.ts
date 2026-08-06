@@ -25,10 +25,7 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// Tracks which item an admin is currently editing the price of
 const adminPriceEdit = new Map<number, string>();
-
-// Tracks which users have already received the reminder message
 const remindedUsers = new Set<number>();
 
 bot.catch((err, ctx) => {
@@ -163,16 +160,14 @@ async function menuKeyboard(userId: number) {
   const cart = getCart(userId);
   if (cart.length > 0) {
     const total = cartTotal(userId);
-    // Big clear checkout button showing total
     rows.push([
       Markup.button.callback(
-        `✅ ትዕዛዝ ጨርስ — ${total} ብር`,
+        `🛒 ዝርዝር ይመልከቱ | ✅ ትዕዛዝ ጨርስ — ${total} ብር`,
         "checkout"
       ),
     ]);
   }
 
-  rows.push([Markup.button.callback("🛒 የምግብ ዝርዝር ይመልከቱ", "view_cart")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -217,7 +212,7 @@ function isAdmin(userId: number) {
 }
 
 // ─────────────────────────────────────────────
-// DAILY RESET (runs every morning at 6:00 AM)
+// DAILY RESET (6:00 AM)
 // ─────────────────────────────────────────────
 
 function scheduleDailyReset() {
@@ -236,10 +231,7 @@ function scheduleDailyReset() {
          WHERE status IN ('pending_payment', 'payment_submitted')
            AND created_at < CURRENT_DATE`
       );
-
-      // Clear reminded users on daily reset
       remindedUsers.clear();
-
       for (const adminId of ADMIN_IDS) {
         try {
           await bot.telegram.sendMessage(
@@ -248,18 +240,16 @@ function scheduleDailyReset() {
           );
         } catch {}
       }
-
       console.log("Daily reset done.");
     } catch (err) {
       console.error("Daily reset error:", err);
     }
-
     scheduleDailyReset();
   }, msUntil(6, 0));
 }
 
 // ─────────────────────────────────────────────
-// NIGHTLY REPORT (runs every night at 9:00 PM)
+// NIGHTLY REPORT (9:00 PM)
 // ─────────────────────────────────────────────
 
 function scheduleNightlyReport() {
@@ -320,12 +310,8 @@ async function sendNightlyReport() {
     0
   );
   const confirmed = orders.filter((o: any) => o.status === "confirmed").length;
-  const submitted = orders.filter(
-    (o: any) => o.status === "payment_submitted"
-  ).length;
-  const pending = orders.filter(
-    (o: any) => o.status === "pending_payment"
-  ).length;
+  const submitted = orders.filter((o: any) => o.status === "payment_submitted").length;
+  const pending = orders.filter((o: any) => o.status === "pending_payment").length;
 
   const divider = `┼${"─".repeat(4)}┼${"─".repeat(14)}┼${"─".repeat(12)}┼${"─".repeat(10)}┼${"─".repeat(10)}┼`;
   const header  = `│ #  │ ደንበኛ         │ ስልክ        │ አይነት    │ ብር       │`;
@@ -399,23 +385,15 @@ bot.command("menu", async (ctx) => {
 
 bot.command("manage", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
-  ctx.reply(
-    "የምግብ ዝርዝር ያስተዳድሩ — ለመቀየር ይጫኑ:",
-    await manageMenuKeyboard()
-  );
+  ctx.reply("የምግብ ዝርዝር ያስተዳድሩ — ለመቀየር ይጫኑ:", await manageMenuKeyboard());
 });
 
 bot.command("confirm", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   const orderId = parseInt(ctx.message.text.split(" ")[1], 10);
   if (!orderId) return ctx.reply("አጠቃቀም: /confirm <order_id>");
-  await pool.query(`UPDATE orders SET status = 'confirmed' WHERE id = $1`, [
-    orderId,
-  ]);
-  const orderResult = await pool.query(
-    `SELECT * FROM orders WHERE id = $1`,
-    [orderId]
-  );
+  await pool.query(`UPDATE orders SET status = 'confirmed' WHERE id = $1`, [orderId]);
+  const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
   const order = orderResult.rows[0];
   if (order) {
     await bot.telegram.sendMessage(
@@ -430,46 +408,35 @@ bot.command("confirm", async (ctx) => {
 
 bot.command("reply", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
-
   const parts = ctx.message.text.split(" ");
   if (parts.length < 3) {
     return ctx.reply(
       "አጠቃቀም: /reply <order_id> <መልዕክት>\nምሳሌ: /reply 42 ትዕዛዝዎ እየተዘጋጀ ነው!"
     );
   }
-
   const orderId = parseInt(parts[1], 10);
   if (isNaN(orderId)) {
     return ctx.reply("ትክክለኛ የትዕዛዝ ቁጥር ያስገቡ። ምሳሌ: /reply 42 መልዕክት");
   }
-
   const message = parts.slice(2).join(" ");
-
   const orderResult = await pool.query(
     `SELECT customer_telegram_id, customer_name FROM orders WHERE id = $1`,
     [orderId]
   );
-
   if (orderResult.rows.length === 0) {
     return ctx.reply(`ትዕዛዝ #${orderId} አልተገኘም።`);
   }
-
   const order = orderResult.rows[0];
-
   try {
     await bot.telegram.sendMessage(
       order.customer_telegram_id,
       `📨 *በምነት ሬስቶራንት:*\n\n${message}`,
       { parse_mode: "Markdown" }
     );
-    ctx.reply(
-      `✅ መልዕክት ለ ${order.customer_name} (ትዕዛዝ #${orderId}) ተልኳል።`
-    );
+    ctx.reply(`✅ መልዕክት ለ ${order.customer_name} (ትዕዛዝ #${orderId}) ተልኳል።`);
   } catch (err) {
     console.error("Failed to send reply to customer:", err);
-    ctx.reply(
-      "❌ መልዕክት መላክ አልተቻለም። ደንበኛው ቦቱን አቁሞ ሊሆን ይችላል።"
-    );
+    ctx.reply("❌ መልዕክት መላክ አልተቻለም። ደንበኛው ቦቱን አቁሞ ሊሆን ይችላል።");
   }
 });
 
@@ -504,22 +471,16 @@ bot.command("setmarquee", async (ctx) => {
   }
   const hours = parseFloat(parts[1]);
   if (isNaN(hours) || hours <= 0) {
-    return ctx.reply(
-      "እባክዎ ትክክለኛ ሰዓት ያስገቡ። ምሳሌ: /setmarquee 2 መልዕክት"
-    );
+    return ctx.reply("እባክዎ ትክክለኛ ሰዓት ያስገቡ። ምሳሌ: /setmarquee 2 መልዕክት");
   }
   const message = parts.slice(2).join(" ");
   await setMarquee(message, hours);
-  ctx.reply(
-    `✅ ማርኬ ተቀጥሏል!\n\n📢 "${message}"\n⏱ ለ ${hours} ሰዓት ይታያል።`
-  );
+  ctx.reply(`✅ ማርኬ ተቀጥሏል!\n\n📢 "${message}"\n⏱ ለ ${hours} ሰዓት ይታያል።`);
 });
 
 bot.command("clearmarquee", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
-  await pool.query(
-    `UPDATE marquee SET message = '', expires_at = NULL WHERE id = 1`
-  );
+  await pool.query(`UPDATE marquee SET message = '', expires_at = NULL WHERE id = 1`);
   ctx.reply("✅ ማርኬ ተሰርዟል።");
 });
 
@@ -532,13 +493,9 @@ bot.action(/^toggle_(.+)$/, async (ctx) => {
   const itemId = ctx.match[1];
   const newState = await toggleAvailability(itemId);
   const item = MENU.find((m) => m.id === itemId);
-  await ctx.answerCbQuery(
-    `${item?.name} አሁን ${newState ? "✅ አለ" : "❌ የለም"}`
-  );
+  await ctx.answerCbQuery(`${item?.name} አሁን ${newState ? "✅ አለ" : "❌ የለም"}`);
   try {
-    await ctx.editMessageReplyMarkup(
-      (await manageMenuKeyboard()).reply_markup
-    );
+    await ctx.editMessageReplyMarkup((await manageMenuKeyboard()).reply_markup);
   } catch {}
 });
 
@@ -572,12 +529,9 @@ bot.action(/^add_(.+)$/, async (ctx) => {
   addToCart(userId, item);
   await ctx.answerCbQuery(`${item.name} ታክሏል ✅`);
 
-  // Send one time reminder the first time they add an item
   if (!remindedUsers.has(userId)) {
     remindedUsers.add(userId);
-    await ctx.reply(
-      `👆 ምግብዎን ከመረጡ በኋላ ✅ ትዕዛዝ ጨርስ የሚለውን ይጫኑ!`
-    );
+    await ctx.reply(`👆 ምግብዎን ከመረጡ በኋላ ✅ ትዕዛዝ ጨርስ የሚለውን ይጫኑ!`);
   }
 
   try {
@@ -609,11 +563,6 @@ bot.action("back_to_menu", async (ctx) => {
   } catch {}
 });
 
-bot.action("view_cart", async (ctx) => {
-  await ctx.answerCbQuery();
-  await showCart(ctx);
-});
-
 async function showCart(ctx: any) {
   const userId = ctx.from.id;
   const cart = getCart(userId);
@@ -633,8 +582,7 @@ async function showCart(ctx: any) {
   const total = cartTotal(userId);
   const header = await buildHeader();
   const text =
-    header +
-    `🛒 የምግብ ዝርዝርዎ:\n\n${lines.join("\n")}\n\nድምር: ${total} ብር`;
+    header + `🛒 የምግብ ዝርዝርዎ:\n\n${lines.join("\n")}\n\nድምር: ${total} ብር`;
   try {
     await ctx.editMessageText(text, cartKeyboard(userId));
   } catch {
@@ -682,7 +630,6 @@ bot.action(/^order_type_(delivery|pickup)$/, async (ctx) => {
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
 
-  // Admin price editing takes priority
   if (isAdmin(userId) && adminPriceEdit.has(userId)) {
     const itemId = adminPriceEdit.get(userId)!;
     const raw = ctx.message.text.trim();
@@ -695,7 +642,6 @@ bot.on("text", async (ctx) => {
     return ctx.reply(`${item?.name} ዋጋ ወደ ${raw} ብር ተቀይሯል ✅`);
   }
 
-  // Customer checkout flow
   const draft = getDraft(userId);
   if (!draft.orderType) return;
 
@@ -795,21 +741,12 @@ bot.on("photo", async (ctx) => {
     `እናመሰግናለን! የክፍያ ስክሪንሾትዎ ለትዕዛዝ #${orderId} ደርሷል። በምነት ሬስቶራንት በቅርቡ ያረጋግጥልዎታል። 🙏`
   );
 
-  const orderResult = await pool.query(
-    `SELECT * FROM orders WHERE id = $1`,
-    [orderId]
-  );
+  const orderResult = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
   const order = orderResult.rows[0];
-  const itemsResult = await pool.query(
-    `SELECT * FROM order_items WHERE order_id = $1`,
-    [orderId]
-  );
+  const itemsResult = await pool.query(`SELECT * FROM order_items WHERE order_id = $1`, [orderId]);
   const items = itemsResult.rows;
   const itemLines = items
-    .map(
-      (i: any) =>
-        `• ${i.item_name} x${i.quantity} — ${i.item_price * i.quantity} ብር`
-    )
+    .map((i: any) => `• ${i.item_name} x${i.quantity} — ${i.item_price * i.quantity} ብር`)
     .join("\n");
 
   const orderTypeLine =
